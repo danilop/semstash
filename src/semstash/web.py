@@ -38,24 +38,13 @@ from semstash.exceptions import (
     StorageError,
     UnsupportedContentTypeError,
 )
+from semstash.utils import format_size
 
 # Template directory (relative to this file)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Set up Jinja2 templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-
-def format_size(size_bytes: int) -> str:
-    """Format file size for display."""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    if size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
-
 
 # Add format_size to Jinja2 globals
 templates.env.globals["format_size"] = format_size

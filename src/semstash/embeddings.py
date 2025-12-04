@@ -19,7 +19,7 @@ from typing import Any
 
 import boto3
 import docx
-import fitz  # type: ignore[import-untyped]  # PyMuPDF
+import fitz  # PyMuPDF
 import openpyxl
 from botocore.exceptions import ClientError
 from pptx import Presentation

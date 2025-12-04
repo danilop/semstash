@@ -30,7 +30,7 @@ from semstash.models import (
 class TestMCPInit:
     """Tests for init tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_init_success(self, mock_get_stash: MagicMock) -> None:
         """Init tool initializes storage."""
         mock_stash = MagicMock()
@@ -55,7 +55,7 @@ class TestMCPInit:
 class TestMCPUpload:
     """Tests for upload tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_upload_success(self, mock_get_stash: MagicMock, sample_text_file: Path) -> None:
         """Upload tool uploads file."""
         mock_stash = MagicMock()
@@ -78,7 +78,7 @@ class TestMCPUpload:
         with pytest.raises(FileNotFoundError, match="not found"):
             upload(file_path="/nonexistent/file.txt")
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_upload_with_force(self, mock_get_stash: MagicMock, sample_text_file: Path) -> None:
         """Upload with force=True overwrites existing content."""
         mock_stash = MagicMock()
@@ -103,7 +103,7 @@ class TestMCPUpload:
 class TestMCPQuery:
     """Tests for query tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_query_success(self, mock_get_stash: MagicMock) -> None:
         """Query tool finds results."""
         mock_stash = MagicMock()
@@ -126,7 +126,7 @@ class TestMCPQuery:
         assert data["count"] == 1
         assert data["results"][0]["key"] == "photo.jpg"
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_query_empty_results(self, mock_get_stash: MagicMock) -> None:
         """Query tool handles no results."""
         mock_stash = MagicMock()
@@ -139,7 +139,7 @@ class TestMCPQuery:
         assert data["count"] == 0
         assert data["results"] == []
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_query_with_tags(self, mock_get_stash: MagicMock) -> None:
         """Query tool filters by tags."""
         mock_stash = MagicMock()
@@ -168,7 +168,7 @@ class TestMCPQuery:
 class TestMCPGet:
     """Tests for get tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_get_success(self, mock_get_stash: MagicMock) -> None:
         """Get tool gets content."""
         from datetime import datetime
@@ -194,7 +194,7 @@ class TestMCPGet:
 class TestMCPDelete:
     """Tests for delete tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_delete_success(self, mock_get_stash: MagicMock) -> None:
         """Delete tool removes content."""
         mock_stash = MagicMock()
@@ -211,7 +211,7 @@ class TestMCPDelete:
 class TestMCPBrowse:
     """Tests for browse tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_browse_success(self, mock_get_stash: MagicMock) -> None:
         """Browse tool lists content."""
         from datetime import datetime
@@ -237,7 +237,7 @@ class TestMCPBrowse:
         assert len(data["items"]) == 1
         assert data["items"][0]["key"] == "photo.jpg"
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_browse_with_prefix(self, mock_get_stash: MagicMock) -> None:
         """Browse tool filters by prefix."""
         from datetime import datetime
@@ -266,7 +266,7 @@ class TestMCPBrowse:
 class TestMCPStats:
     """Tests for stats tool."""
 
-    @patch("semstash.mcp_server.get_stash")
+    @patch("semstash.mcp_server.get_cached_stash")
     def test_stats_success(self, mock_get_stash: MagicMock) -> None:
         """Stats tool returns statistics."""
         mock_stash = MagicMock()

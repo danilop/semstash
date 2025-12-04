@@ -19,23 +19,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from semstash.client import SemStash, create_stash_from_env
 from semstash.config import DEFAULT_BROWSE_LIMIT, DEFAULT_SEARCH_TOP_K
 from semstash.markdown import is_markdown_convertible, to_markdown
+from semstash.utils import get_cached_stash
 
 # Create FastMCP server
 mcp = FastMCP("semstash")
-
-# Global stash instance (cached for performance)
-_stash: SemStash | None = None
-
-
-def get_stash() -> SemStash:
-    """Get or create the SemStash instance from environment variables."""
-    global _stash
-    if _stash is None:
-        _stash = create_stash_from_env()
-    return _stash
 
 
 def to_json(data: dict[str, Any]) -> str:
@@ -49,7 +38,7 @@ def to_json(data: dict[str, Any]) -> str:
 @mcp.tool()
 def init() -> str:
     """Initialize semantic storage. Creates S3 bucket and vector index if they don't exist."""
-    result = get_stash().init()
+    result = get_cached_stash().init()
     return to_json(
         {
             "bucket": result.bucket,
@@ -68,7 +57,7 @@ def upload(file_path: str, key: str | None = None, force: bool = False) -> str:
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    result = get_stash().upload(file_path=path, key=key, force=force)
+    result = get_cached_stash().upload(file_path=path, key=key, force=force)
     return to_json(
         {
             "key": result.key,
@@ -91,7 +80,7 @@ def query(
         top_k: Maximum number of results to return.
         tags: Filter results by tags (any match).
     """
-    results = get_stash().query(query_text=query_text, top_k=top_k, tags=tags)
+    results = get_cached_stash().query(query_text=query_text, top_k=top_k, tags=tags)
     return to_json(
         {
             "query": query_text,
@@ -119,7 +108,7 @@ def get(key: str, return_content: bool = False) -> str:
     Returns:
         JSON with metadata, URL, and optionally content.
     """
-    stash = get_stash()
+    stash = get_cached_stash()
     result = stash.get(key)
 
     response: dict[str, Any] = {
@@ -162,14 +151,14 @@ def get(key: str, return_content: bool = False) -> str:
 @mcp.tool()
 def delete(key: str) -> str:
     """Delete content from storage."""
-    result = get_stash().delete(key)
+    result = get_cached_stash().delete(key)
     return to_json({"key": result.key, "deleted": result.deleted})
 
 
 @mcp.tool()
 def browse(prefix: str = "", limit: int = DEFAULT_BROWSE_LIMIT) -> str:
     """Browse stored content."""
-    result = get_stash().browse(prefix=prefix, limit=limit)
+    result = get_cached_stash().browse(prefix=prefix, limit=limit)
     return to_json(
         {
             "total": result.total,
@@ -184,7 +173,7 @@ def browse(prefix: str = "", limit: int = DEFAULT_BROWSE_LIMIT) -> str:
 @mcp.tool()
 def stats() -> str:
     """Get storage statistics."""
-    s = get_stash().get_stats()
+    s = get_cached_stash().get_stats()
     return to_json(
         {
             "content_count": s.content_count,

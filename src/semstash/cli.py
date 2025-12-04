@@ -43,6 +43,7 @@ from semstash.exceptions import (
     UnsupportedContentTypeError,
 )
 from semstash.markdown import is_markdown_convertible, to_markdown
+from semstash.utils import format_size
 
 # Create app and console
 app = typer.Typer(
@@ -85,16 +86,6 @@ def download_content(
 
 
 # --- Output Formatting ---
-
-
-def format_size(size_bytes: int) -> str:
-    """Format byte size as human-readable string."""
-    size: float = float(size_bytes)
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
 
 
 def output_json(data: dict[str, Any]) -> None:

@@ -15,12 +15,12 @@ flowchart LR
     subgraph Upload
         F[File] --> S3[(S3 Bucket)]
         F --> Bedrock[Amazon Bedrock]
-        Bedrock --> |embedding| SV[(S3 Vectors)]
+        Bedrock --> |Amazon Nova<br/>Multimodal Embeddings| SV[(S3 Vectors)]
     end
 
     subgraph Query
         Q[Natural Language] --> Bedrock2[Amazon Bedrock]
-        Bedrock2 --> |embedding| SV
+        Bedrock2 --> |Amazon Nova<br/>Multimodal Embeddings| SV
         SV --> |similar content| R[Results]
         S3 -.-> |presigned URLs| R
     end

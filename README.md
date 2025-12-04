@@ -21,7 +21,8 @@ flowchart LR
     subgraph Query
         Q[Natural Language] --> Bedrock2[Amazon Bedrock]
         Bedrock2 --> |embedding| SV
-        SV --> |similar content| R[Results with presigned URLs]
+        SV --> |similar content| R[Results]
+        S3 -.-> |presigned URLs| R
     end
 ```
 

@@ -13,15 +13,15 @@ When you upload a file, SemStash stores it in S3 and generates a vector embeddin
 ```mermaid
 flowchart LR
     subgraph Upload
-        F[File] --> S3[(Amazon S3)]
-        F --> Nova[Amazon Nova]
-        Nova --> |embedding| SV[(S3 Vectors)]
+        F[File] --> S3[(S3 Bucket)]
+        F --> Bedrock[Amazon Bedrock]
+        Bedrock --> |embedding| SV[(S3 Vectors)]
     end
 
     subgraph Query
-        Q[Natural Language] --> Nova2[Amazon Nova]
-        Nova2 --> |embedding| SV
-        SV --> |similar content| R[Results with URLs]
+        Q[Natural Language] --> Bedrock2[Amazon Bedrock]
+        Bedrock2 --> |embedding| SV
+        SV --> |similar content| R[Results with presigned URLs]
     end
 ```
 

@@ -285,6 +285,27 @@ class TestCliQuery:
         # Should NOT contain table formatting
         assert "Score" not in result.output
 
+    @patch("semstash.cli.SemStash")
+    def test_query_with_expiry(self, mock_stash_class: MagicMock) -> None:
+        """Query with --expiry passes expiry to client."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="photo.jpg",
+                score=0.95,
+                distance=0.05,
+                url="https://bucket.s3.amazonaws.com/photo.jpg?expires=7200",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["query", "test", "photos", "--expiry", "7200"])
+
+        assert result.exit_code == 0
+        mock_stash.query.assert_called_once()
+        call_kwargs = mock_stash.query.call_args.kwargs
+        assert call_kwargs.get("url_expiry") == 7200
+
 
 class TestCliGet:
     """Tests for get command."""
@@ -374,6 +395,28 @@ class TestCliGet:
         data = json.loads(result.output)
         assert data["count"] == 2
         assert len(data["items"]) == 2
+
+    @patch("semstash.cli.SemStash")
+    def test_get_with_expiry(self, mock_stash_class: MagicMock) -> None:
+        """Get with --expiry passes expiry to client."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.return_value = GetResult(
+            key="photo.jpg",
+            content_type="image/jpeg",
+            file_size=2048,
+            created_at=datetime.now(),
+            url="https://example.com/photo.jpg?expires=7200",
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["get", "test-bucket", "photo.jpg", "--expiry", "7200"])
+
+        assert result.exit_code == 0
+        mock_stash.get.assert_called_once()
+        call_kwargs = mock_stash.get.call_args.kwargs
+        assert call_kwargs.get("url_expiry") == 7200
 
 
 class TestCliDelete:

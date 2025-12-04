@@ -13,8 +13,8 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from helpers import assert_valid_query_results, assert_valid_search_result
+
 from semstash import SemStash
 
 
@@ -350,9 +350,7 @@ class TestIntegrationDocuments:
         query_results = integration_stash.query(
             "machine learning neural networks deep learning", top_k=5
         )
-        assert_valid_query_results(
-            query_results, min_count=1, expected_keys=[sample_pdf_file.name]
-        )
+        assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_pdf_file.name])
 
     def test_upload_docx_and_query(
         self,
@@ -475,6 +473,4 @@ class TestIntegrationDocuments:
         query_results = integration_stash.query("landscape nature scenery", top_k=5)
 
         # At minimum the JPG should match with valid scores
-        assert_valid_query_results(
-            query_results, min_count=1, expected_keys=[sample_jpg_file.name]
-        )
+        assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_jpg_file.name])

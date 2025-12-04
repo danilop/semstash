@@ -22,9 +22,14 @@ from unittest.mock import MagicMock
 
 import boto3
 import pytest
+
+# Re-export helper functions for use by test files
+from helpers import assert_valid_query_results, assert_valid_search_result
 from moto import mock_aws
 
 from semstash.config import Config
+
+__all__ = ["assert_valid_query_results", "assert_valid_search_result"]
 
 # --- Pytest Configuration ---
 
@@ -635,10 +640,3 @@ def sample_jpg_file() -> Path:
     if sample is None:
         pytest.skip("sample.jpg not found in tests/samples/")
     return sample
-
-
-# --- Query Result Validation Helpers ---
-# Re-export from helpers module for DRY
-from helpers import assert_valid_query_results, assert_valid_search_result
-
-__all__ = ["assert_valid_query_results", "assert_valid_search_result"]

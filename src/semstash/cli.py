@@ -315,6 +315,9 @@ def query(
     urls: Annotated[
         bool, typer.Option("--urls", "-u", help="Output presigned URLs only (one per line)")
     ] = False,
+    expiry: Annotated[
+        int | None, typer.Option("--expiry", "-e", help="URL expiry in seconds (default: 3600)")
+    ] = None,
     markdown: Annotated[
         bool, typer.Option("--markdown", "-m", help="Convert documents to Markdown")
     ] = False,
@@ -349,6 +352,7 @@ def query(
                     top_k=top_k,
                     content_type=content_type or None,
                     tags=tags,
+                    url_expiry=expiry,
                 )
         else:
             results = client.query(
@@ -356,6 +360,7 @@ def query(
                 top_k=top_k,
                 content_type=content_type or None,
                 tags=tags,
+                url_expiry=expiry,
             )
 
         # Handle download
@@ -431,6 +436,9 @@ def get(
         Path | None,
         typer.Option("--download", "-d", help="Download to path (directory for multiple keys)"),
     ] = None,
+    expiry: Annotated[
+        int | None, typer.Option("--expiry", "-e", help="URL expiry in seconds (default: 3600)")
+    ] = None,
     markdown: Annotated[
         bool, typer.Option("--markdown", "-m", help="Convert document to Markdown")
     ] = False,
@@ -452,7 +460,7 @@ def get(
 
         for key in keys:
             try:
-                result = client.get(key)
+                result = client.get(key, url_expiry=expiry)
                 results.append(result)
             except ContentNotFoundError:
                 if len(keys) == 1:

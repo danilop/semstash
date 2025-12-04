@@ -425,6 +425,7 @@ class SemStash:
         content_type: str | None = None,
         tags: list[str] | None = None,
         include_url: bool = True,
+        url_expiry: int | None = None,
     ) -> list[SearchResult]:
         """Query for similar content using natural language.
 
@@ -434,6 +435,7 @@ class SemStash:
             content_type: Filter by content type.
             tags: Filter by tags (any match).
             include_url: Include presigned download URLs.
+            url_expiry: Presigned URL expiry in seconds (default: config.presigned_url_expiry).
 
         Returns:
             List of SearchResult sorted by similarity (highest first).
@@ -444,9 +446,11 @@ class SemStash:
         """
         self._ensure_initialized()
 
-        # Use config default if not specified
+        # Use config defaults if not specified
         if top_k is None:
             top_k = self.config.search_top_k
+        if url_expiry is None:
+            url_expiry = self.config.presigned_url_expiry
 
         # Generate query embedding
         query_embedding = self._embedding_generator.embed_text(query_text)  # type: ignore
@@ -466,7 +470,7 @@ class SemStash:
         for result in results:
             # Add URL if requested
             if include_url:
-                result.url = self._content_storage.get_presigned_url(result.key)  # type: ignore
+                result.url = self._content_storage.get_presigned_url(result.key, expiry=url_expiry)  # type: ignore
 
             # Fill in content metadata from vector metadata
             result.content_type = result.metadata.get("content_type")
@@ -515,11 +519,12 @@ class SemStash:
             # Combine with $and
             return {"$and": filters}
 
-    def get(self, key: str) -> GetResult:
+    def get(self, key: str, url_expiry: int | None = None) -> GetResult:
         """Get content metadata and download URL.
 
         Args:
             key: Storage key of the content.
+            url_expiry: Presigned URL expiry in seconds (default: config.presigned_url_expiry).
 
         Returns:
             GetResult with metadata and presigned URL.
@@ -529,11 +534,15 @@ class SemStash:
         """
         self._ensure_initialized()
 
+        # Use config default if not specified
+        if url_expiry is None:
+            url_expiry = self.config.presigned_url_expiry
+
         # Get S3 metadata
         storage_item = self._content_storage.get_metadata(key)  # type: ignore
 
         # Get presigned URL
-        url = self._content_storage.get_presigned_url(key)  # type: ignore
+        url = self._content_storage.get_presigned_url(key, expiry=url_expiry)  # type: ignore
 
         return GetResult(
             key=storage_item.key,

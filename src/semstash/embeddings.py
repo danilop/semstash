@@ -243,7 +243,7 @@ class EmbeddingGenerator:
         """Generate embedding for PDF content.
 
         Uses PyMuPDF to render PDF pages to images, then embeds with
-        Nova's DOCUMENT_IMAGE detail level for better text interpretation.
+        the Nova DOCUMENT_IMAGE detail level for better text interpretation.
         For multi-page documents, embeds the first page.
 
         Args:

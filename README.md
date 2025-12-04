@@ -41,14 +41,14 @@ This architecture means you can search across different media types. Upload a ph
 Install SemStash as a command-line tool using [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install semstash
+uv tool install git+https://github.com/danilop/semstash.git
 ```
 
 Or add it to your Python project:
 
 ```bash
-uv add semstash
-pip install semstash  # alternatively
+uv add git+https://github.com/danilop/semstash.git
+pip install git+https://github.com/danilop/semstash.git  # alternatively
 ```
 
 ## Getting Started

@@ -345,18 +345,39 @@ class TestSemStashUpload:
 class TestSemStashQuery:
     """Tests for query functionality."""
 
-    def test_basic_query(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Basic text query."""
+    def test_basic_query(
+        self,
+        stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Basic text query returns valid results with proper scores and metadata."""
+        from helpers import assert_valid_query_results, assert_valid_search_result
+
         # Upload some content first
         stash.upload(sample_text_file)
 
         results = stash.query("test query", top_k=5)
 
         assert isinstance(results, list)
-        # Note: mocked query returns stored vectors
+        assert_valid_query_results(results, min_count=1, expected_keys=[sample_text_file.name])
 
-    def test_query_with_filters(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Query with content type filter."""
+        # Verify the specific result has valid data
+        matched = next(r for r in results if r.key == sample_text_file.name)
+        assert_valid_search_result(
+            matched,
+            expected_key=sample_text_file.name,
+            expected_content_type="text/plain",
+            require_file_size=True,
+        )
+
+    def test_query_with_filters(
+        self,
+        stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Query with content type filter returns valid results."""
+        from helpers import assert_valid_query_results
+
         stash.upload(sample_text_file)
 
         results = stash.query(
@@ -366,22 +387,40 @@ class TestSemStashQuery:
         )
 
         assert isinstance(results, list)
+        assert_valid_query_results(results, min_count=1)
 
-    def test_query_without_urls(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Query without including URLs."""
+    def test_query_without_urls(
+        self,
+        stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Query without including URLs still returns valid scores."""
+        from helpers import assert_valid_query_results
+
         stash.upload(sample_text_file)
 
         results = stash.query("test query", include_url=False)
 
         assert isinstance(results, list)
+        assert_valid_query_results(results, min_count=1)
+        # URL should not be set
+        for r in results:
+            assert r.url is None, "URL should be None when include_url=False"
 
-    def test_query_with_tags(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Query with tag filter."""
+    def test_query_with_tags(
+        self,
+        stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Query with tag filter returns valid results."""
+        from helpers import assert_valid_query_results
+
         stash.upload(sample_text_file, tags=["test", "sample"])
 
         results = stash.query("test query", tags=["test"])
 
         assert isinstance(results, list)
+        assert_valid_query_results(results, min_count=1)
 
 
 class TestBuildFilterExpression:

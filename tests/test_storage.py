@@ -343,10 +343,25 @@ class TestVectorStorageQuery:
         storage = VectorStorage("test-vectors", client=mock_s3vectors)
         storage._initialized = True
 
+        # First store a vector so there's something to query
+        storage.put_vector("doc-1", [0.1] * 3072, metadata={"content_type": "text/plain"})
+
         results = storage.query([0.1] * 3072, top_k=5)
 
         assert isinstance(results, list)
+        assert len(results) >= 1
+
+        # Verify query was called with returnDistance and returnMetadata
         mock_s3vectors.query_vectors.assert_called()
+        call_kwargs = mock_s3vectors.query_vectors.call_args.kwargs
+        assert call_kwargs.get("returnDistance") is True, "returnDistance should be True"
+        assert call_kwargs.get("returnMetadata") is True, "returnMetadata should be True"
+
+        # Verify result structure contains expected fields
+        result = results[0]
+        assert result.key is not None, "SearchResult.key should not be None"
+        assert result.distance is not None, "distance should be returned when returnDistance=True"
+        assert result.metadata is not None, "metadata should be returned when returnMetadata=True"
 
     def test_query_not_initialized(self, mock_s3vectors: MagicMock) -> None:
         """Query without initialization raises error."""

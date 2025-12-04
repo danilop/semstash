@@ -4,6 +4,8 @@
 
 SemStash lets you store any content—text, images, audio, video, or documents—and find it using natural language. Instead of remembering exact file names or organizing folders, you simply describe what you're looking for: *"the presentation about Q3 revenue"* or *"photos from the beach trip"*.
 
+Use SemStash through the **command-line interface (CLI)** for terminal workflows, the **Python library** for integration into your applications, the **web interface** for browser-based access, the **REST API** for HTTP-based integrations, or the **MCP server** to give AI assistants persistent semantic memory.
+
 Under the hood, SemStash combines three AWS services: [Amazon S3](https://aws.amazon.com/s3/) provides virtually unlimited, durable storage for your files. [Amazon S3 Vectors](https://aws.amazon.com/s3/features/vectors/) stores vector embeddings that capture the semantic meaning of your content. [Amazon Nova](https://aws.amazon.com/ai/generative-ai/nova/) generates these embeddings, understanding text, images, audio, and video in a unified way.
 
 ## How It Works

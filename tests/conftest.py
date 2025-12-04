@@ -275,22 +275,24 @@ def mock_s3vectors() -> MagicMock:
         indexName: str,
         queryVector: dict[str, list[float]] | None = None,
         topK: int = 10,
+        returnDistance: bool = False,
+        returnMetadata: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         # Return stored vectors (simple mock, no actual similarity)
+        # Mirrors real S3 Vectors API: only return distance/metadata if requested
         prefix = f"{vectorBucketName}/{indexName}/"
         matching = [v for k, v in vector_store.items() if k.startswith(prefix)]
         results = matching[:topK]
-        return {
-            "vectors": [
-                {
-                    "key": v["key"],
-                    "distance": 0.1,  # Mock distance
-                    "metadata": v.get("metadata", {}),
-                }
-                for v in results
-            ]
-        }
+        vectors = []
+        for v in results:
+            result: dict[str, Any] = {"key": v["key"]}
+            if returnDistance:
+                result["distance"] = 0.1  # Mock distance
+            if returnMetadata:
+                result["metadata"] = v.get("metadata", {})
+            vectors.append(result)
+        return {"vectors": vectors}
 
     def delete_vectors(
         vectorBucketName: str, indexName: str, keys: list[str], **kwargs: Any
@@ -633,3 +635,10 @@ def sample_jpg_file() -> Path:
     if sample is None:
         pytest.skip("sample.jpg not found in tests/samples/")
     return sample
+
+
+# --- Query Result Validation Helpers ---
+# Re-export from helpers module for DRY
+from helpers import assert_valid_query_results, assert_valid_search_result
+
+__all__ = ["assert_valid_query_results", "assert_valid_search_result"]

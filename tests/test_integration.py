@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from helpers import assert_valid_query_results, assert_valid_search_result
 from semstash import SemStash
 
 
@@ -27,7 +28,6 @@ class TestIntegrationUploadQuery:
         sample_text_file: Path,
     ) -> None:
         """Upload a text file and query for it."""
-
         # Upload file
         result = integration_stash.upload(sample_text_file)
         assert result.key == sample_text_file.name
@@ -35,11 +35,20 @@ class TestIntegrationUploadQuery:
 
         # Query for content (matches actual text file content)
         query_results = integration_stash.query("sample text for testing semantic storage", top_k=5)
-        assert len(query_results) >= 1
 
-        # The uploaded file should be in results
-        keys = [r.key for r in query_results]
-        assert sample_text_file.name in keys
+        # Use helper to validate all results have proper scores and metadata
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_text_file.name]
+        )
+
+        # Verify the specific matched result
+        matched_result = next(r for r in query_results if r.key == sample_text_file.name)
+        assert_valid_search_result(
+            matched_result,
+            expected_key=sample_text_file.name,
+            expected_content_type="text/plain",
+            require_file_size=True,
+        )
 
     def test_upload_image_and_query(
         self,
@@ -47,7 +56,6 @@ class TestIntegrationUploadQuery:
         sample_image_file: Path,
     ) -> None:
         """Upload an image file and query for it."""
-
         # Upload image
         result = integration_stash.upload(sample_image_file)
         assert result.key == sample_image_file.name
@@ -55,9 +63,9 @@ class TestIntegrationUploadQuery:
 
         # Query for image content (1x1 transparent pixel - minimal PNG)
         # For a minimal test image, any visual query will have low similarity
-        # Just verify the query returns results
+        # Just verify the query returns valid results with proper metadata
         query_results = integration_stash.query("small transparent image", top_k=5)
-        assert len(query_results) >= 1
+        assert_valid_query_results(query_results, min_count=1)
 
 
 @pytest.mark.integration
@@ -284,9 +292,8 @@ class TestIntegrationTagFiltering:
 
         # Query with tag filter - should only return the text file
         results = integration_stash.query("sample content", tags=["documentation"])
-        assert len(results) >= 1
+        assert_valid_query_results(results, min_count=1, expected_keys=[sample_text_file.name])
         keys = [r.key for r in results]
-        assert sample_text_file.name in keys
         # JSON file should not be in filtered results (different tags)
         assert sample_json_file.name not in keys
 
@@ -303,10 +310,11 @@ class TestIntegrationTagFiltering:
 
         # Query with multiple tags - should return files matching any tag
         results = integration_stash.query("content", tags=["type-a", "type-b"])
-        assert len(results) >= 2
-        keys = [r.key for r in results]
-        assert sample_text_file.name in keys
-        assert sample_json_file.name in keys
+        assert_valid_query_results(
+            results,
+            min_count=2,
+            expected_keys=[sample_text_file.name, sample_json_file.name],
+        )
 
     def test_query_with_nonexistent_tag(
         self,
@@ -342,11 +350,9 @@ class TestIntegrationDocuments:
         query_results = integration_stash.query(
             "machine learning neural networks deep learning", top_k=5
         )
-        assert len(query_results) >= 1
-
-        # The uploaded PDF should be in results
-        keys = [r.key for r in query_results]
-        assert sample_pdf_file.name in keys
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_pdf_file.name]
+        )
 
     def test_upload_docx_and_query(
         self,
@@ -361,11 +367,9 @@ class TestIntegrationDocuments:
 
         # Query for content that's in the DOCX
         query_results = integration_stash.query("semantic storage architecture embeddings", top_k=5)
-        assert len(query_results) >= 1
-
-        # The uploaded DOCX should be in results
-        keys = [r.key for r in query_results]
-        assert sample_docx_file.name in keys
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_docx_file.name]
+        )
 
     def test_upload_pptx_and_query(
         self,
@@ -380,11 +384,9 @@ class TestIntegrationDocuments:
 
         # Query for content that's in the PPTX
         query_results = integration_stash.query("REST API design patterns", top_k=5)
-        assert len(query_results) >= 1
-
-        # The uploaded PPTX should be in results
-        keys = [r.key for r in query_results]
-        assert sample_pptx_file.name in keys
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_pptx_file.name]
+        )
 
     def test_upload_xlsx_and_query(
         self,
@@ -399,11 +401,9 @@ class TestIntegrationDocuments:
 
         # Query for content that's in the XLSX (converted to CSV/text)
         query_results = integration_stash.query("quarterly sales revenue financial data", top_k=5)
-        assert len(query_results) >= 1
-
-        # The uploaded XLSX should be in results
-        keys = [r.key for r in query_results]
-        assert sample_xlsx_file.name in keys
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_xlsx_file.name]
+        )
 
     def test_download_pdf_content_matches(
         self,
@@ -473,9 +473,8 @@ class TestIntegrationDocuments:
 
         # Query for landscape/nature content (common in the image)
         query_results = integration_stash.query("landscape nature scenery", top_k=5)
-        assert len(query_results) >= 1
 
-        # All three should appear (image in PDF, image query, etc.)
-        keys = [r.key for r in query_results]
-        # At minimum the JPG should match
-        assert sample_jpg_file.name in keys
+        # At minimum the JPG should match with valid scores
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[sample_jpg_file.name]
+        )

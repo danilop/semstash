@@ -765,6 +765,8 @@ class VectorStorage:
                 "indexName": self.index_name,
                 "queryVector": {"float32": vector},
                 "topK": top_k,
+                "returnDistance": True,
+                "returnMetadata": True,
             }
             if filter_expression:
                 params["filter"] = filter_expression

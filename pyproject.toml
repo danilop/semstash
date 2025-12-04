@@ -91,6 +91,7 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-v --tb=short -m 'not integration'"
 asyncio_mode = "auto"
 markers = [

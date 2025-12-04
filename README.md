@@ -162,9 +162,9 @@ flowchart TB
     end
 
     subgraph AWS["AWS Services"]
-        S3[(Amazon S3<br/>Content Storage)]
+        S3[(S3 Bucket<br/>Content Storage)]
         SV[(S3 Vectors<br/>Embeddings)]
-        Nova[Amazon Nova<br/>Embeddings Model]
+        Bedrock[Amazon Bedrock<br/>Nova Multimodal Embeddings]
     end
 
     CLI --> Client
@@ -175,9 +175,10 @@ flowchart TB
     Client --> Embed
     Client --> Store
 
-    Embed --> Nova
+    Embed --> Bedrock
     Store --> S3
     Store --> SV
+    S3 -.->|Presigned URLs| Client
 ```
 
 The core library handles all AWS interactions. Five interfaces—CLI, Python API, [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server, Web UI, and REST API—share this same core, ensuring consistent behavior across all access methods.
@@ -209,7 +210,7 @@ This design keeps content and embeddings synchronized: when you delete a file, i
 
 ## Supported Content Types
 
-SemStash handles multiple content categories through Amazon Nova's multimodal embeddings:
+SemStash handles multiple content categories through [Amazon Nova Multimodal Embeddings](https://docs.aws.amazon.com/nova/latest/userguide/modality-embeddings.html) via Amazon Bedrock:
 
 **Text** files are embedded directly. This includes plain text (`.txt`), Markdown (`.md`), JSON, HTML, CSV, and XML. The embedding captures the semantic meaning of the text content.
 

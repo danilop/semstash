@@ -98,8 +98,15 @@ class ContentStorage:
             self._bucket_verified = True
             return False
         except ClientError as e:
-            if _get_error_code(e) in ("404", "NoSuchBucket"):
+            error_code = _get_error_code(e)
+            if error_code in ("404", "NoSuchBucket"):
                 return self._create_bucket()
+            if error_code in ("403", "Forbidden"):
+                raise StorageError(
+                    f"Bucket name '{self.bucket}' is not available. "
+                    "S3 bucket names are globally unique. "
+                    "Please choose a different name."
+                ) from e
             raise StorageError(f"Failed to access bucket {self.bucket}: {e}") from e
 
     def _create_bucket(self) -> bool:

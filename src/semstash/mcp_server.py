@@ -1,7 +1,7 @@
 """MCP Server for semstash - AI agent interface.
 
 Provides MCP tools for semantic storage operations using FastMCP.
-Can be used with Claude Desktop and other MCP-compatible clients.
+Can be used with any MCP-compatible client.
 
 Usage:
     # Run the server

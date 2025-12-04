@@ -264,7 +264,7 @@ semstash archive query "payment terms 90 days"
 
 ### AI Agent Memory
 
-Give AI agents persistent, searchable memory. The MCP server integrates with [Claude](https://claude.ai/) and other MCP-compatible assistants:
+Give AI agents persistent, searchable memory. The MCP server integrates with any MCP-compatible assistant:
 
 ```bash
 semstash mcp  # Start MCP server
@@ -280,7 +280,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) server lets AI as
 semstash mcp
 ```
 
-For [Claude Desktop](https://claude.ai/download), add to your configuration:
+For MCP-compatible assistants, add to your configuration:
 
 ```json
 {

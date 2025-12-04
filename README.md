@@ -394,7 +394,7 @@ SemStash requires these AWS permissions:
 
 **Bedrock**: Invoke the Nova embeddings model.
 
-SemStash defaults to `us-east-1`. Check the [AWS Regional Services List](https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/) for current availability of Amazon Bedrock, Amazon S3, and Amazon S3 Vectors in your preferred region.
+SemStash defaults to `us-east-1`. Check [AWS Capabilities by Region](https://builders.aws/capabilities) for current availability of Amazon Bedrock, Amazon S3, and Amazon S3 Vectors in your preferred region.
 
 ## Maintenance Commands
 

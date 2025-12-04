@@ -312,6 +312,9 @@ def query(
     download: Annotated[
         Path | None, typer.Option("--download", "-d", help="Download results to directory")
     ] = None,
+    urls: Annotated[
+        bool, typer.Option("--urls", "-u", help="Output presigned URLs only (one per line)")
+    ] = False,
     markdown: Annotated[
         bool, typer.Option("--markdown", "-m", help="Convert documents to Markdown")
     ] = False,
@@ -322,9 +325,13 @@ def query(
 
     Returns semantically similar content ranked by relevance.
     Use -d to download results to a directory.
+    Use -u to output presigned URLs only (one per line, for piping).
     Use -m to convert documents (PDF, DOCX, etc.) to Markdown.
     Use SEMSTASH_SEARCH_TOP_K env var to change the default.
     """
+    # Validate mutually exclusive options
+    if download and urls:
+        error_exit("Cannot use --download and --urls together.")
     try:
         client = SemStash(bucket=stash, region=region)
         show_progress = output == "text"
@@ -363,6 +370,13 @@ def query(
                     as_markdown=markdown,
                     output=output,
                 )
+            return
+
+        # Handle --urls: output presigned URLs only (one per line)
+        if urls:
+            for r in results:
+                if r.url:
+                    print(r.url)
             return
 
         if output == "json":

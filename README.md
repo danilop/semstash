@@ -99,6 +99,12 @@ Results are ranked by semantic similarity. You can filter by tags:
 semstash my-stash query "sunset" --tag photos
 ```
 
+Get presigned URLs for query results (useful for piping to other tools):
+
+```bash
+semstash my-stash query "beach photos" --urls
+```
+
 ### Managing Content
 
 Browse what's in your stash:

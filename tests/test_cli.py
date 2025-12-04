@@ -254,6 +254,37 @@ class TestCliQuery:
         call_kwargs = mock_stash.query.call_args.kwargs
         assert call_kwargs.get("tags") == ["vacation", "summer"]
 
+    @patch("semstash.cli.SemStash")
+    def test_query_urls_output(self, mock_stash_class: MagicMock) -> None:
+        """Query with --urls outputs presigned URLs only."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="photo1.jpg",
+                score=0.95,
+                distance=0.05,
+                url="https://bucket.s3.amazonaws.com/photo1.jpg?signed=1",
+            ),
+            SearchResult(
+                key="photo2.jpg",
+                score=0.90,
+                distance=0.10,
+                url="https://bucket.s3.amazonaws.com/photo2.jpg?signed=2",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["query", "test", "photos", "--urls"])
+
+        assert result.exit_code == 0
+        # Should output only URLs, one per line
+        lines = result.output.strip().split("\n")
+        assert len(lines) == 2
+        assert "https://bucket.s3.amazonaws.com/photo1.jpg?signed=1" in lines[0]
+        assert "https://bucket.s3.amazonaws.com/photo2.jpg?signed=2" in lines[1]
+        # Should NOT contain table formatting
+        assert "Score" not in result.output
+
 
 class TestCliGet:
     """Tests for get command."""

@@ -24,6 +24,14 @@ flowchart LR
         SV --> |similar content| R[Results]
         S3 -.-> |presigned URLs| R
     end
+
+    style S3 fill:#3F8624,stroke:#3F8624,color:#fff
+    style SV fill:#3F8624,stroke:#3F8624,color:#fff
+    style Bedrock fill:#01A88D,stroke:#01A88D,color:#fff
+    style Bedrock2 fill:#01A88D,stroke:#01A88D,color:#fff
+    style F fill:#232F3E,stroke:#232F3E,color:#fff
+    style Q fill:#232F3E,stroke:#232F3E,color:#fff
+    style R fill:#232F3E,stroke:#232F3E,color:#fff
 ```
 
 This architecture means you can search across different media types. Upload a photo of a sunset, then find it by searching for *"evening sky with orange colors"*. Upload a meeting recording, then find it by asking for *"discussion about the new product launch"*.

@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Upload - SemStash{% endblock %}
+
+{% block content %}
+<h1 class="mb-3">Upload Content</h1>
+
+<div class="card">
+    <form id="upload-form" action="/upload" method="POST" enctype="multipart/form-data">
+        <div class="dropzone" id="dropzone">
+            <div class="icon">📁</div>
+            <p class="mb-1"><strong>Drag and drop files here</strong></p>
+            <p class="text-muted mb-2">or click to select files</p>
+            <input type="file" id="file-input" name="file" style="display: none;" multiple>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">
+                Choose Files
+            </button>
+        </div>
+
+        <div id="file-list" class="mt-2" style="display: none;">
+            <h3 class="mb-1">Selected Files</h3>
+            <div id="files-container"></div>
+        </div>
+
+        <div class="form-group mt-2">
+            <label for="tags">Tags (comma-separated)</label>
+            <input type="text" class="form-control" id="tags" name="tags" placeholder="e.g., photos, vacation, 2024">
+        </div>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="force" value="true">
+                Overwrite existing files with same name
+            </label>
+        </div>
+
+        <div class="mt-2">
+            <button type="submit" class="btn btn-primary btn-lg" id="upload-btn" disabled>
+                Upload
+                <span class="htmx-indicator"><span class="spinner"></span></span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<div id="upload-results" class="mt-2"></div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const fileList = document.getElementById('file-list');
+const filesContainer = document.getElementById('files-container');
+const uploadBtn = document.getElementById('upload-btn');
+const uploadForm = document.getElementById('upload-form');
+const resultsDiv = document.getElementById('upload-results');
+
+// Drag and drop handlers
+dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+});
+
+dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dragover');
+});
+
+dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    fileInput.files = e.dataTransfer.files;
+    updateFileList();
+});
+
+dropzone.addEventListener('click', (e) => {
+    if (e.target === dropzone || e.target.closest('.icon') || e.target.closest('p')) {
+        fileInput.click();
+    }
+});
+
+fileInput.addEventListener('change', updateFileList);
+
+function updateFileList() {
+    const files = fileInput.files;
+    if (files.length > 0) {
+        fileList.style.display = 'block';
+        filesContainer.innerHTML = '';
+        for (const file of files) {
+            const div = document.createElement('div');
+            div.className = 'search-result';
+            div.innerHTML = `
+                <div class="file-icon">${getFileIcon(file.type)}</div>
+                <div>
+                    <div class="key">${file.name}</div>
+                    <div class="meta">${formatSize(file.size)} • ${file.type || 'Unknown type'}</div>
+                </div>
+            `;
+            filesContainer.appendChild(div);
+        }
+        uploadBtn.disabled = false;
+    } else {
+        fileList.style.display = 'none';
+        uploadBtn.disabled = true;
+    }
+}
+
+function getFileIcon(type) {
+    if (type.startsWith('image/')) return '🖼️';
+    if (type.startsWith('video/')) return '🎬';
+    if (type.startsWith('audio/')) return '🎵';
+    if (type === 'application/pdf') return '📄';
+    if (type.includes('spreadsheet') || type.includes('excel')) return '📊';
+    if (type.includes('presentation') || type.includes('powerpoint')) return '📽️';
+    if (type.includes('document') || type.includes('word')) return '📝';
+    if (type.startsWith('text/')) return '📃';
+    return '📁';
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// Handle form submission
+uploadForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    uploadBtn.disabled = true;
+    uploadBtn.innerHTML = 'Uploading... <span class="spinner"></span>';
+    resultsDiv.innerHTML = '';
+
+    const files = fileInput.files;
+    const tags = document.getElementById('tags').value;
+    const force = document.querySelector('input[name="force"]').checked;
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        if (tags) formData.append('tags', tags);
+        if (force) formData.append('force', 'true');
+
+        try {
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                successCount++;
+                resultsDiv.innerHTML += `
+                    <div class="alert alert-success">
+                        <strong>✓ Uploaded:</strong> ${data.key} (${data.content_type})
+                    </div>
+                `;
+            } else {
+                errorCount++;
+                resultsDiv.innerHTML += `
+                    <div class="alert alert-error">
+                        <strong>✗ Failed:</strong> ${file.name} - ${data.detail || 'Unknown error'}
+                    </div>
+                `;
+            }
+        } catch (err) {
+            errorCount++;
+            resultsDiv.innerHTML += `
+                <div class="alert alert-error">
+                    <strong>✗ Error:</strong> ${file.name} - ${err.message}
+                </div>
+            `;
+        }
+    }
+
+    uploadBtn.disabled = false;
+    uploadBtn.innerHTML = 'Upload';
+
+    if (successCount > 0 && errorCount === 0) {
+        fileInput.value = '';
+        updateFileList();
+    }
+});
+</script>
+{% endblock %}

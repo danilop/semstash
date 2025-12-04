@@ -1,0 +1,10 @@
+# Known vulnerabilities to ignore
+# These are tracked and will be fixed when upstream releases patches
+
+vulnerabilities:
+  # pdfminer-six local privilege escalation via pickle deserialization
+  # Transitive dependency from markitdown - no fix available yet
+  # Low risk: requires write access to CMap path
+  # Tracking: https://github.com/pdfminer/pdfminer.six/security/advisories/GHSA-f83h-ghpp-7wcc
+  - id: GHSA-f83h-ghpp-7wcc
+    reason: "Transitive dep from markitdown, no fix available. Low risk for our use case."

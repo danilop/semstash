@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - SemStash{% endblock %}
+
+{% block content %}
+<h1 class="mb-3">Dashboard</h1>
+
+{% if error %}
+<div class="alert alert-error">
+    {{ error }}
+</div>
+{% else %}
+<div class="stats-grid mb-3">
+    <div class="stat-card">
+        <div class="label">Content Items</div>
+        <div class="value">{{ stats.content_count }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Vector Embeddings</div>
+        <div class="value">{{ stats.vector_count }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Storage Used</div>
+        <div class="value">{{ "%.2f"|format(stats.storage_gb) }} GB</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Dimension</div>
+        <div class="value">{{ stats.dimension }}</div>
+    </div>
+</div>
+
+<div class="card mb-2">
+    <h2>Storage Info</h2>
+    <p><strong>Bucket:</strong> {{ bucket }}</p>
+    <p><strong>Region:</strong> {{ region }}</p>
+</div>
+
+<div class="card">
+    <h2>Quick Actions</h2>
+    <div class="flex gap-2 mt-2">
+        <a href="/ui/upload" class="btn btn-primary btn-lg">Upload Files</a>
+        <a href="/ui/browse" class="btn btn-secondary btn-lg">Browse Content</a>
+        <a href="/ui/search" class="btn btn-secondary btn-lg">Search</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

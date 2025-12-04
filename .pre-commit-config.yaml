@@ -1,0 +1,79 @@
+# Pre-commit configuration for semstash
+# See https://pre-commit.com for more information
+# Install: uv run pre-commit install
+# Run manually: uv run pre-commit run --all-files
+
+default_language_version:
+  python: python3.13
+
+repos:
+  # Local hooks for project-specific checks (run on all files)
+  - repo: local
+    hooks:
+      # Ruff linter
+      - id: ruff-lint
+        name: ruff (lint)
+        entry: uv run ruff check src/ tests/ --fix
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Ruff formatter
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run ruff format src/ tests/ --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Check for dead code with vulture
+      - id: vulture
+        name: vulture (dead code)
+        entry: uv run vulture src/ vulture_whitelist.py --min-confidence 80
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Type checking with mypy
+      # Skip with: SKIP=mypy git commit -m "message"
+      - id: mypy
+        name: mypy (type check)
+        entry: uv run mypy src/
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Run unit tests (integration tests excluded by default in pyproject.toml)
+      - id: pytest
+        name: pytest (unit tests)
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Run integration tests (requires AWS credentials)
+      # Tests are automatically skipped if credentials are unavailable
+      # Skip with: SKIP=pytest-aws git commit -m "message"
+      - id: pytest-aws
+        name: pytest (AWS integration)
+        entry: uv run pytest -m integration --use-aws
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Security scanning with bandit
+      - id: bandit
+        name: bandit (security)
+        entry: uv run bandit -r src/ -ll -q
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Dependency vulnerability scanning
+      # Skip with: SKIP=pip-audit git commit -m "message"
+      - id: pip-audit
+        name: pip-audit (dependencies)
+        entry: uv run pip-audit --ignore-vuln GHSA-f83h-ghpp-7wcc
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -1,0 +1,689 @@
+"""Tests for CLI module."""
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from typer.testing import CliRunner
+
+from semstash.cli import app
+from semstash.exceptions import ContentExistsError
+from semstash.models import (
+    BrowseResult,
+    CheckResult,
+    DeleteResult,
+    DestroyResult,
+    GetResult,
+    InitResult,
+    SearchResult,
+    StorageItem,
+    SyncResult,
+    UploadResult,
+    UsageStats,
+)
+
+runner = CliRunner()
+
+
+class TestCliHelp:
+    """Tests for CLI help output."""
+
+    def test_main_help(self) -> None:
+        """Main help shows all commands."""
+        result = runner.invoke(app, ["--help"])
+
+        assert result.exit_code == 0
+        assert "init" in result.output
+        assert "upload" in result.output
+        assert "query" in result.output
+        assert "get" in result.output
+        assert "delete" in result.output
+        assert "browse" in result.output
+        assert "stats" in result.output
+        assert "check" in result.output
+        assert "sync" in result.output
+        assert "destroy" in result.output
+
+
+class TestCliInit:
+    """Tests for init command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_init_success(self, mock_stash_class: MagicMock) -> None:
+        """Init command creates storage."""
+        mock_stash = MagicMock()
+        mock_stash.init.return_value = InitResult(
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            region="us-east-1",
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["init", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "test-bucket" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_init_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Init command with JSON output."""
+        mock_stash = MagicMock()
+        mock_stash.init.return_value = InitResult(
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            region="us-east-1",
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["init", "test-bucket", "--output", "json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["bucket"] == "test-bucket"
+        assert data["dimension"] == 3072
+
+
+class TestCliUpload:
+    """Tests for upload command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_file(self, mock_stash_class: MagicMock, sample_text_file: Path) -> None:
+        """Upload command uploads file."""
+        mock_stash = MagicMock()
+
+        mock_stash.upload.return_value = UploadResult(
+            key=sample_text_file.name,
+            content_type="text/plain",
+            file_size=100,
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash upload <stash> <file>
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file)])
+
+        assert result.exit_code == 0
+        assert sample_text_file.name in result.output
+        mock_stash.upload.assert_called_once()
+
+    def test_upload_nonexistent_file(self) -> None:
+        """Upload nonexistent file shows error."""
+        result = runner.invoke(app, ["upload", "test-bucket", "/nonexistent/file.txt"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_existing_shows_error(
+        self, mock_stash_class: MagicMock, sample_text_file: Path
+    ) -> None:
+        """Upload to existing key shows error with force hint."""
+        mock_stash = MagicMock()
+        mock_stash.upload.side_effect = ContentExistsError(
+            "Content already exists at 'sample.txt'. Use force=True to overwrite."
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file)])
+
+        assert result.exit_code == 1
+        assert "already exists" in result.output
+        assert "--force" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_with_force(self, mock_stash_class: MagicMock, sample_text_file: Path) -> None:
+        """Upload with --force succeeds."""
+        mock_stash = MagicMock()
+        mock_result = MagicMock()
+        mock_result.key = sample_text_file.name
+        mock_result.content_type = "text/plain"
+        mock_result.file_size = 100
+        mock_result.dimension = 3072
+        mock_stash.upload.return_value = mock_result
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "--force"])
+
+        assert result.exit_code == 0
+        mock_stash.upload.assert_called_once()
+        # Verify force=True was passed
+        call_kwargs = mock_stash.upload.call_args[1]
+        assert call_kwargs.get("force") is True
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_multiple_files(
+        self, mock_stash_class: MagicMock, sample_text_file: Path, sample_image_file: Path
+    ) -> None:
+        """Upload command handles multiple files."""
+        mock_stash = MagicMock()
+        # Return different results for each file
+        mock_stash.upload.side_effect = [
+            UploadResult(
+                key=sample_text_file.name,
+                content_type="text/plain",
+                file_size=100,
+                dimension=3072,
+            ),
+            UploadResult(
+                key=sample_image_file.name,
+                content_type="image/png",
+                file_size=200,
+                dimension=3072,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app, ["upload", "test-bucket", str(sample_text_file), str(sample_image_file)]
+        )
+
+        assert result.exit_code == 0
+        assert mock_stash.upload.call_count == 2
+        assert "Uploaded 2 files" in result.output
+
+
+class TestCliQuery:
+    """Tests for query command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_query_basic(self, mock_stash_class: MagicMock) -> None:
+        """Query command finds results."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="photo.jpg",
+                score=0.95,
+                distance=0.05,
+                content_type="image/jpeg",
+                file_size=1024,
+                url="https://example.com/photo.jpg",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash query <stash> <query>
+        result = runner.invoke(app, ["query", "test-bucket", "sunset beach"])
+
+        assert result.exit_code == 0
+        assert "photo.jpg" in result.output
+        assert "0.95" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_query_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Query with JSON output."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="doc.txt",
+                score=0.85,
+                distance=0.15,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["query", "test", "test query", "--output", "json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["query"] == "test query"
+        assert len(data["results"]) == 1
+
+    @patch("semstash.cli.SemStash")
+    def test_query_with_tags(self, mock_stash_class: MagicMock) -> None:
+        """Query command filters by tags."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="vacation.jpg",
+                score=0.90,
+                distance=0.10,
+                content_type="image/jpeg",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app, ["query", "test-bucket", "beach", "--tag", "vacation", "--tag", "summer"]
+        )
+
+        assert result.exit_code == 0
+        # Verify tags were passed to query
+        mock_stash.query.assert_called_once()
+        call_kwargs = mock_stash.query.call_args.kwargs
+        assert call_kwargs.get("tags") == ["vacation", "summer"]
+
+
+class TestCliGet:
+    """Tests for get command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_get_success(self, mock_stash_class: MagicMock) -> None:
+        """Get command shows content info."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.return_value = GetResult(
+            key="photo.jpg",
+            content_type="image/jpeg",
+            file_size=2048,
+            created_at=datetime.now(),
+            url="https://example.com/photo.jpg",
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash get <stash> <key>
+        result = runner.invoke(app, ["get", "test-bucket", "photo.jpg"])
+
+        assert result.exit_code == 0
+        assert "photo.jpg" in result.output
+        assert "image/jpeg" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_get_multiple_keys(self, mock_stash_class: MagicMock) -> None:
+        """Get command accepts multiple keys."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.side_effect = [
+            GetResult(
+                key="photo1.jpg",
+                content_type="image/jpeg",
+                file_size=1024,
+                created_at=datetime.now(),
+                url="https://example.com/photo1.jpg",
+            ),
+            GetResult(
+                key="photo2.jpg",
+                content_type="image/png",
+                file_size=2048,
+                created_at=datetime.now(),
+                url="https://example.com/photo2.jpg",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["get", "test-bucket", "photo1.jpg", "photo2.jpg"])
+
+        assert result.exit_code == 0
+        assert "photo1.jpg" in result.output
+        assert "photo2.jpg" in result.output
+        assert mock_stash.get.call_count == 2
+
+    @patch("semstash.cli.SemStash")
+    def test_get_multiple_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Get multiple keys returns array in JSON mode."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.side_effect = [
+            GetResult(
+                key="photo1.jpg",
+                content_type="image/jpeg",
+                file_size=1024,
+                created_at=datetime.now(),
+                url="https://example.com/photo1.jpg",
+            ),
+            GetResult(
+                key="photo2.jpg",
+                content_type="image/png",
+                file_size=2048,
+                created_at=datetime.now(),
+                url="https://example.com/photo2.jpg",
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app, ["get", "test-bucket", "photo1.jpg", "photo2.jpg", "-o", "json"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 2
+        assert len(data["items"]) == 2
+
+
+class TestCliDelete:
+    """Tests for delete command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_delete_with_confirm(self, mock_stash_class: MagicMock) -> None:
+        """Delete command with --yes skips confirmation."""
+        mock_stash = MagicMock()
+        mock_stash.delete.return_value = DeleteResult(key="photo.jpg", deleted=True)
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash delete <stash> <key> --yes
+        result = runner.invoke(app, ["delete", "test-bucket", "photo.jpg", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_delete_abort(self, mock_stash_class: MagicMock) -> None:
+        """Delete command can be aborted."""
+        result = runner.invoke(app, ["delete", "test-bucket", "photo.jpg"], input="n\n")
+
+        assert result.exit_code == 1
+
+    @patch("semstash.cli.SemStash")
+    def test_delete_multiple_keys(self, mock_stash_class: MagicMock) -> None:
+        """Delete command accepts multiple keys."""
+        mock_stash = MagicMock()
+        mock_stash.delete.side_effect = [
+            DeleteResult(key="photo1.jpg", deleted=True),
+            DeleteResult(key="photo2.jpg", deleted=True),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["delete", "test-bucket", "photo1.jpg", "photo2.jpg", "--yes"])
+
+        assert result.exit_code == 0
+        assert "photo1.jpg" in result.output
+        assert "photo2.jpg" in result.output
+        assert mock_stash.delete.call_count == 2
+
+    @patch("semstash.cli.SemStash")
+    def test_delete_multiple_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Delete multiple keys returns array in JSON mode."""
+        mock_stash = MagicMock()
+        mock_stash.delete.side_effect = [
+            DeleteResult(key="photo1.jpg", deleted=True),
+            DeleteResult(key="photo2.jpg", deleted=True),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app,
+            ["delete", "test-bucket", "photo1.jpg", "photo2.jpg", "--yes", "-o", "json"],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 2
+        assert len(data["deleted"]) == 2
+
+
+class TestCliBrowse:
+    """Tests for browse command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_browse_empty(self, mock_stash_class: MagicMock) -> None:
+        """Browse with no content."""
+        mock_stash = MagicMock()
+        mock_stash.browse.return_value = BrowseResult(items=[], total=0)
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash browse <stash>
+        result = runner.invoke(app, ["browse", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "No content found" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_browse_with_content(self, mock_stash_class: MagicMock) -> None:
+        """Browse with content items."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.browse.return_value = BrowseResult(
+            items=[
+                StorageItem(
+                    key="photo.jpg",
+                    content_type="image/jpeg",
+                    file_size=1024,
+                    created_at=datetime.now(),
+                ),
+            ],
+            total=1,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["browse", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "photo.jpg" in result.output
+
+
+class TestCliStats:
+    """Tests for stats command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_stats(self, mock_stash_class: MagicMock) -> None:
+        """Stats command shows statistics."""
+        mock_stash = MagicMock()
+        mock_stash.get_stats.return_value = UsageStats(
+            content_count=10,
+            vector_count=10,
+            storage_bytes=1024 * 1024,
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash stats <stash>
+        result = runner.invoke(app, ["stats", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "10" in result.output
+        assert "3072" in result.output
+
+
+class TestCliCheck:
+    """Tests for check command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_check_consistent(self, mock_stash_class: MagicMock) -> None:
+        """Check command shows consistent status."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=5,
+            vector_count=5,
+            orphaned_vectors=[],
+            missing_vectors=[],
+            is_consistent=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash check <stash>
+        result = runner.invoke(app, ["check", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "consistent" in result.output.lower()
+        assert "5" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_check_inconsistent(self, mock_stash_class: MagicMock) -> None:
+        """Check command shows inconsistencies."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=3,
+            vector_count=5,
+            orphaned_vectors=["orphan1.jpg", "orphan2.jpg"],
+            missing_vectors=["missing1.txt"],
+            is_consistent=False,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["check", "test-bucket"])
+
+        assert result.exit_code == 0
+        assert "Orphaned" in result.output
+        assert "Missing" in result.output
+        assert "sync" in result.output.lower()
+
+    @patch("semstash.cli.SemStash")
+    def test_check_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Check command with JSON output."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=3,
+            vector_count=3,
+            orphaned_vectors=[],
+            missing_vectors=[],
+            is_consistent=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["check", "test-bucket", "--output", "json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["content_count"] == 3
+        assert data["is_consistent"] is True
+
+
+class TestCliSync:
+    """Tests for sync command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_sync_already_consistent(self, mock_stash_class: MagicMock) -> None:
+        """Sync command when already consistent."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=5,
+            vector_count=5,
+            orphaned_vectors=[],
+            missing_vectors=[],
+            is_consistent=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash sync <stash> --yes
+        result = runner.invoke(app, ["sync", "test-bucket", "--yes"])
+
+        assert result.exit_code == 0
+        assert "consistent" in result.output.lower()
+        mock_stash.sync.assert_not_called()
+
+    @patch("semstash.cli.SemStash")
+    def test_sync_with_changes(self, mock_stash_class: MagicMock) -> None:
+        """Sync command with changes."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=3,
+            vector_count=5,
+            orphaned_vectors=["orphan1.jpg"],
+            missing_vectors=["missing1.txt"],
+            is_consistent=False,
+        )
+        mock_stash.sync.return_value = SyncResult(
+            deleted_vectors=["orphan1.jpg"],
+            created_vectors=["missing1.txt"],
+            failed_keys=[],
+            deleted_count=1,
+            created_count=1,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["sync", "test-bucket", "--yes"])
+
+        assert result.exit_code == 0
+        assert "1" in result.output
+        mock_stash.sync.assert_called_once()
+
+    @patch("semstash.cli.SemStash")
+    def test_sync_abort(self, mock_stash_class: MagicMock) -> None:
+        """Sync command can be aborted."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=3,
+            vector_count=5,
+            orphaned_vectors=["orphan1.jpg"],
+            missing_vectors=[],
+            is_consistent=False,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["sync", "test-bucket"], input="n\n")
+
+        assert result.exit_code == 1
+        mock_stash.sync.assert_not_called()
+
+    @patch("semstash.cli.SemStash")
+    def test_sync_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Sync command with JSON output."""
+        mock_stash = MagicMock()
+        mock_stash.check.return_value = CheckResult(
+            content_count=5,
+            vector_count=5,
+            orphaned_vectors=[],
+            missing_vectors=[],
+            is_consistent=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["sync", "test-bucket", "--output", "json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["deleted_count"] == 0
+        assert data["created_count"] == 0
+
+
+class TestCliDestroy:
+    """Tests for destroy command."""
+
+    @patch("semstash.cli.SemStash")
+    def test_destroy_with_yes(self, mock_stash_class: MagicMock) -> None:
+        """Destroy command with --yes skips confirmation."""
+        mock_stash = MagicMock()
+        mock_stash._content_storage._bucket = "test-bucket"
+        mock_stash.destroy.return_value = DestroyResult(
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            content_deleted=5,
+            vectors_deleted=5,
+            bucket_deleted=True,
+            vector_bucket_deleted=True,
+            destroyed=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        # New syntax: semstash destroy <stash> --yes --force
+        result = runner.invoke(app, ["destroy", "test-bucket", "--yes", "--force"])
+
+        assert result.exit_code == 0
+        assert "destroyed" in result.output.lower()
+        mock_stash.destroy.assert_called_once_with(force=True)
+
+    @patch("semstash.cli.SemStash")
+    def test_destroy_abort(self, mock_stash_class: MagicMock) -> None:
+        """Destroy command can be aborted."""
+        mock_stash = MagicMock()
+        mock_stash._content_storage._bucket = "test-bucket"
+        mock_stash.get_stats.return_value = UsageStats(
+            content_count=5,
+            vector_count=5,
+            storage_bytes=1024,
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["destroy", "test-bucket"], input="n\n")
+
+        assert result.exit_code == 1
+        mock_stash.destroy.assert_not_called()
+
+    @patch("semstash.cli.SemStash")
+    def test_destroy_json_output(self, mock_stash_class: MagicMock) -> None:
+        """Destroy command with JSON output."""
+        mock_stash = MagicMock()
+        mock_stash.destroy.return_value = DestroyResult(
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            content_deleted=0,
+            vectors_deleted=0,
+            bucket_deleted=True,
+            vector_bucket_deleted=True,
+            destroyed=True,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["destroy", "test-bucket", "--yes", "--output", "json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["bucket"] == "test-bucket"
+        assert data["destroyed"] is True

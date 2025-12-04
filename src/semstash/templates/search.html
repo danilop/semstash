@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Search - SemStash{% endblock %}
+
+{% block content %}
+<h1 class="mb-3">Semantic Search</h1>
+
+<div class="card mb-2">
+    <form method="GET" action="/ui/search">
+        <div class="form-group">
+            <label for="q">What are you looking for?</label>
+            <input type="text" class="form-control" id="q" name="q" value="{{ query }}"
+                   placeholder="Describe what you're looking for..." autofocus
+                   style="font-size: 1.25rem; padding: 0.75rem 1rem;">
+        </div>
+        <div class="flex gap-2 items-center">
+            <div class="form-group" style="margin-bottom: 0;">
+                <input type="text" class="form-control" name="tag" value="{{ tag or '' }}" placeholder="Filter by tag">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <select class="form-control" name="content_type">
+                    <option value="">All types</option>
+                    <option value="image" {% if content_type == 'image' %}selected{% endif %}>Images</option>
+                    <option value="video" {% if content_type == 'video' %}selected{% endif %}>Videos</option>
+                    <option value="audio" {% if content_type == 'audio' %}selected{% endif %}>Audio</option>
+                    <option value="text" {% if content_type == 'text' %}selected{% endif %}>Text</option>
+                    <option value="application/pdf" {% if content_type == 'application/pdf' %}selected{% endif %}>PDF</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg">Search</button>
+        </div>
+    </form>
+</div>
+
+{% if error %}
+<div class="alert alert-error">
+    {{ error }}
+</div>
+{% elif query %}
+    {% if results %}
+    <div class="card">
+        <h2 class="mb-2">Found {{ results|length }} results</h2>
+
+        {% for result in results %}
+        <div class="search-result">
+            <div class="score">{{ "%.0f"|format(result.score * 100) }}%</div>
+            <div class="file-icon">
+                {% if result.content_type and result.content_type.startswith('image/') %}🖼️
+                {% elif result.content_type and result.content_type.startswith('video/') %}🎬
+                {% elif result.content_type and result.content_type.startswith('audio/') %}🎵
+                {% elif result.content_type == 'application/pdf' %}📄
+                {% elif result.content_type and 'spreadsheet' in result.content_type %}📊
+                {% elif result.content_type and 'presentation' in result.content_type %}📽️
+                {% elif result.content_type and result.content_type.startswith('text/') %}📃
+                {% else %}📁{% endif %}
+            </div>
+            <div style="flex: 1;">
+                <div class="key">
+                    <a href="/ui/content/{{ result.key }}" style="text-decoration: none; color: var(--gray-900);">
+                        {{ result.key }}
+                    </a>
+                </div>
+                <div class="meta">
+                    {{ result.content_type or 'Unknown type' }}
+                    {% if result.file_size %} • {{ format_size(result.file_size) }}{% endif %}
+                </div>
+            </div>
+            <div>
+                <a href="/ui/content/{{ result.key }}" class="btn btn-secondary">View</a>
+                {% if result.url %}
+                <a href="{{ result.url }}" class="btn btn-primary" target="_blank">Download</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="card text-center">
+        <p class="text-muted">No results found for "{{ query }}"</p>
+        <p class="text-muted">Try different keywords or remove filters</p>
+    </div>
+    {% endif %}
+{% else %}
+<div class="card text-center">
+    <p class="text-muted mb-2">Enter a search query to find content</p>
+    <p class="text-muted">Use natural language to describe what you're looking for.</p>
+    <p class="text-muted">Examples: "beach sunset", "quarterly report", "meeting notes from last week"</p>
+</div>
+{% endif %}
+{% endblock %}

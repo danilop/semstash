@@ -424,8 +424,10 @@ SemStash works with sensible defaults but supports customization through environ
 
 ### Environment Variables
 
+These environment variables configure the Web server, MCP server, and Python API. The CLI takes the bucket name as a command argument instead.
+
 ```bash
-SEMSTASH_BUCKET=my-stash        # Default bucket name
+SEMSTASH_BUCKET=my-stash        # Bucket name (for web/MCP/Python API)
 SEMSTASH_REGION=us-east-1       # AWS region
 SEMSTASH_DIMENSION=3072         # Embedding dimension (256, 384, 1024, 3072)
 ```
@@ -436,7 +438,6 @@ Create `semstash.toml` or `.semstash.toml`:
 
 ```toml
 [aws]
-bucket = "my-stash"
 region = "us-east-1"
 
 [embeddings]

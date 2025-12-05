@@ -375,6 +375,14 @@ The web interface provides:
 | Search | `/ui/search` | Semantic search with visual results |
 | Content | `/ui/content/{path}` | Preview, metadata, download, delete |
 
+<p align="center">
+  <img src="screenshots/web-browse.png" alt="Browse content with folder navigation" width="800">
+</p>
+
+<p align="center">
+  <img src="screenshots/web-search.png" alt="Semantic search with relevance scores" width="800">
+</p>
+
 ## REST API
 
 For web applications or services that need programmatic HTTP access, use the REST API:

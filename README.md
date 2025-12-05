@@ -1,6 +1,10 @@
-# SemStash
+<p align="center">
+  <img src="logo.svg" alt="SemStash - Semantic Storage for Humans & AI" width="400">
+</p>
 
-**Unlimited semantic storage for humans and AI agents.**
+<p align="center">
+  <strong>Unlimited semantic storage for humans and AI agents.</strong>
+</p>
 
 SemStash lets you store any content—text, images, audio, video, or documents—and find it using natural language. Instead of remembering exact file names or organizing folders, you simply describe what you're looking for: *"the presentation about Q3 revenue"* or *"photos from the beach trip"*.
 
@@ -67,20 +71,46 @@ semstash init my-stash
 
 This creates an S3 bucket for your content and a vector index for embeddings. The stash is ready to use immediately.
 
+### Path Model
+
+SemStash uses a **path-based model** for organizing content, similar to a filesystem. Every piece of content has a path that starts with `/`:
+
+- `/photo.jpg` — a file at the root
+- `/docs/readme.txt` — a file in the docs folder
+- `/projects/2024/report.pdf` — a file in a nested folder
+
+When uploading, you specify a **target path**. The trailing slash determines behavior:
+
+| Target | Uploaded File | Result Path |
+|--------|--------------|-------------|
+| `/` | `photo.jpg` | `/photo.jpg` |
+| `/docs/` | `notes.txt` | `/docs/notes.txt` |
+| `/docs/readme.txt` | `draft.txt` | `/docs/readme.txt` |
+
+- **Trailing `/`** = folder (preserves original filename)
+- **No trailing `/`** = exact path (can rename on upload)
+
+This model makes it easy to organize content into logical folders and filter queries by path.
+
 ### Uploading Content
 
-Add files to your stash:
+Add files to your stash by specifying a target path. The target determines where your content is stored—think of it like a filesystem:
 
 ```bash
-semstash my-stash upload vacation-photo.jpg
-semstash my-stash upload quarterly-report.pdf
-semstash my-stash upload meeting-notes.txt
+# Upload to root (file keeps its original name)
+semstash my-stash upload vacation-photo.jpg /
+semstash my-stash upload quarterly-report.pdf /
+
+# Upload to a folder (trailing slash = folder)
+semstash my-stash upload meeting-notes.txt /notes/
 ```
+
+The trailing slash matters: `/docs/` means "upload to the docs folder", while `/docs/readme.txt` means "upload and rename to readme.txt".
 
 You can upload multiple files at once and add tags for organization:
 
 ```bash
-semstash my-stash upload *.jpg --tag photos --tag 2024
+semstash my-stash upload *.jpg /photos/ --tag vacation --tag 2024
 ```
 
 ### Searching with Natural Language
@@ -93,10 +123,11 @@ semstash my-stash query "financial projections for next year"
 semstash my-stash query "action items from last meeting"
 ```
 
-Results are ranked by semantic similarity. You can filter by tags:
+Results are ranked by semantic similarity. You can filter by tags or path:
 
 ```bash
 semstash my-stash query "sunset" --tag photos
+semstash my-stash query "meeting notes" --path /notes/
 ```
 
 Get presigned URLs for query results (useful for piping to other tools):
@@ -107,23 +138,25 @@ semstash my-stash query "beach photos" --urls
 
 ### Managing Content
 
-Browse what's in your stash:
+Browse what's in your stash by path:
 
 ```bash
-semstash my-stash browse
-semstash my-stash browse --prefix reports/
+semstash my-stash browse /            # Browse root
+semstash my-stash browse /reports/    # Browse reports folder
 ```
 
-Get a download URL for specific content:
+Get a download URL for specific content using its full path:
 
 ```bash
-semstash my-stash get quarterly-report.pdf
+semstash my-stash get /quarterly-report.pdf
+semstash my-stash get /reports/annual-2024.pdf
 ```
 
 Remove content you no longer need:
 
 ```bash
-semstash my-stash delete old-draft.txt
+semstash my-stash delete /old-draft.txt
+semstash my-stash delete /archive/obsolete.pdf
 ```
 
 ## Python API
@@ -137,24 +170,40 @@ from semstash import SemStash
 stash = SemStash("my-stash")
 stash.init()
 
-# Upload content with tags
-result = stash.upload("photo.jpg", tags=["vacation", "beach"])
-print(f"Stored as: {result.key}")
+# Upload content to root (target is required)
+result = stash.upload("photo.jpg", target="/", tags=["vacation", "beach"])
+print(f"Stored at: {result.path}")  # /photo.jpg
+
+# Upload to a folder (preserves filename)
+result = stash.upload("notes.txt", target="/docs/")
+print(f"Stored at: {result.path}")  # /docs/notes.txt
+
+# Upload with rename (no trailing slash = exact path)
+result = stash.upload("draft.txt", target="/docs/readme.txt")
+print(f"Stored at: {result.path}")  # /docs/readme.txt
 
 # Query semantically
 for item in stash.query("sunset on beach", top_k=5):
-    print(f"{item.score:.2f} - {item.key}")
+    print(f"{item.score:.2f} - {item.path}")
     print(f"  Download: {item.url}")
 
-# Get content metadata and URL
-content = stash.get("photo.jpg")
+# Query with path filter
+for item in stash.query("meeting notes", path="/docs/"):
+    print(f"{item.path}: {item.score:.2f}")
+
+# Get content metadata and URL (use full path)
+content = stash.get("/photo.jpg")
 print(f"Type: {content.content_type}, Size: {content.file_size}")
 
-# Download content locally
-stash.download("photo.jpg", "./local-copy.jpg")
+# Browse a folder
+for item in stash.browse("/docs/").items:
+    print(f"{item.path}: {item.content_type}")
 
-# Delete when done
-stash.delete("photo.jpg")
+# Download content locally
+stash.download("/photo.jpg", "./local-copy.jpg")
+
+# Delete when done (use full path)
+stash.delete("/photo.jpg")
 ```
 
 The API supports all the same operations as the CLI: `init()`, `open()`, `upload()`, `query()`, `get()`, `download()`, `delete()`, `browse()`, `check()`, `sync()`, and `destroy()`.
@@ -246,8 +295,9 @@ SemStash handles multiple content categories through [Amazon Nova Multimodal Emb
 Store articles, notes, and research you want to remember. Instead of organizing bookmarks or maintaining folder hierarchies, upload content and search later by topic:
 
 ```bash
-semstash knowledge upload interesting-article.pdf --tag research
+semstash knowledge upload interesting-article.pdf /research/ --tag ml
 semstash knowledge query "machine learning optimization techniques"
+semstash knowledge query "neural networks" --path /research/
 ```
 
 ### Media Library
@@ -255,9 +305,9 @@ semstash knowledge query "machine learning optimization techniques"
 Manage photos, videos, and audio without manual tagging. Upload your media and search by what's in it:
 
 ```bash
-semstash media upload vacation-photos/*.jpg
+semstash media upload vacation-photos/*.jpg /photos/vacation/
 semstash media query "beach with palm trees"
-semstash media query "people dancing"
+semstash media query "people dancing" --path /photos/
 ```
 
 ### Document Archive
@@ -265,8 +315,8 @@ semstash media query "people dancing"
 Keep business documents searchable without complex filing systems. Upload contracts, reports, and correspondence, then find them by content:
 
 ```bash
-semstash archive upload contracts/*.pdf --tag legal
-semstash archive query "non-compete clause"
+semstash archive upload contracts/*.pdf /legal/contracts/ --tag 2024
+semstash archive query "non-compete clause" --path /legal/
 semstash archive query "payment terms 90 days"
 ```
 
@@ -320,10 +370,10 @@ The web interface provides:
 | Page | URL | Purpose |
 |------|-----|---------|
 | Dashboard | `/ui/` | Storage stats, quick actions |
-| Upload | `/ui/upload` | Drag-and-drop file uploads with tags |
-| Browse | `/ui/browse` | Paginated content list with filtering |
+| Upload | `/ui/upload` | Drag-and-drop file uploads with target path |
+| Browse | `/ui/browse/{path}` | Paginated content list with filtering |
 | Search | `/ui/search` | Semantic search with visual results |
-| Content | `/ui/content/{key}` | Preview, metadata, download, delete |
+| Content | `/ui/content/{path}` | Preview, metadata, download, delete |
 
 ## REST API
 
@@ -336,18 +386,20 @@ semstash web
 The API runs at `http://localhost:8000` with interactive documentation at `/docs`. Key endpoints:
 
 ```
-POST /init          Create new storage
-POST /open          Open existing storage
-POST /upload        Upload files (multipart form)
-GET  /query?q=...   Semantic search
-GET  /content/{key} Get metadata and download URL
-DELETE /content/{key} Remove content
-GET  /browse        List stored content
-GET  /stats         Storage statistics
-GET  /check         Consistency check
-POST /sync          Repair inconsistencies
-DELETE /destroy     Remove storage (irreversible)
+POST   /init              Create new storage
+POST   /open              Open existing storage
+POST   /upload            Upload files (multipart form with target path)
+GET    /query?q=...       Semantic search (supports path= filter)
+GET    /content/{path}    Get metadata and download URL
+DELETE /content/{path}    Remove content
+GET    /browse/{path}     List stored content at path
+GET    /stats             Storage statistics
+GET    /check             Consistency check
+POST   /sync              Repair inconsistencies
+DELETE /destroy           Remove storage (irreversible)
 ```
+
+Content paths use URL encoding. For example, `/content/docs/readme.txt` gets the file at path `/docs/readme.txt`.
 
 Configure the server with environment variables:
 

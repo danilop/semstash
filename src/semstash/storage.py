@@ -798,16 +798,13 @@ class VectorStorage:
             raise StorageError(f"Vector query failed: {e}") from e
 
     def get_stats(self) -> dict[str, Any]:
-        """Get index statistics.
-
-        Note: The S3 Vectors API does not provide a vector count.
-        Use list_all_keys() for accurate count (expensive for large indexes).
+        """Get index configuration.
 
         Returns:
-            Dictionary with index configuration (dimension, distance_metric).
+            Dictionary with dimension and distance_metric.
 
         Raises:
-            StorageError: If stats retrieval fails.
+            StorageError: If retrieval fails.
         """
         try:
             response = self.client.get_index(

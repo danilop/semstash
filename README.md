@@ -254,22 +254,22 @@ The core library handles all AWS interactions. Five interfaces—CLI, Python API
 Each stash consists of two S3 buckets: one for content files and one for vector embeddings. The content bucket stores your original files with their metadata. The vector bucket uses [S3 Vectors](https://aws.amazon.com/s3/features/vectors/) to store embeddings with the same keys, enabling fast similarity search.
 
 ```mermaid
-flowchart LR
-    subgraph Content["Content Bucket<br/>(my-stash)"]
+flowchart TB
+    subgraph Content["S3 Bucket: my-stash"]
+        direction LR
         C1[photo.jpg]
         C2[report.pdf]
         C3[notes.txt]
     end
 
-    subgraph Vectors["Vector Bucket<br/>(my-stash-vectors)"]
-        V1["photo.jpg → [0.12, ...]"]
-        V2["report.pdf → [0.78, ...]"]
-        V3["notes.txt → [0.56, ...]"]
+    subgraph Vectors["S3 Vectors: my-stash-vec"]
+        direction LR
+        V1["photo.jpg → 0.12..."]
+        V2["report.pdf → 0.78..."]
+        V3["notes.txt → 0.56..."]
     end
 
-    C1 -.-> V1
-    C2 -.-> V2
-    C3 -.-> V3
+    Content -.-> Vectors
 ```
 
 This design keeps content and embeddings synchronized: when you delete a file, its embedding is also removed. The `check` command verifies consistency, and `sync` repairs any drift.

@@ -13,8 +13,11 @@
                    style="font-size: 1.25rem; padding: 0.75rem 1rem;">
         </div>
         <div class="flex gap-2 items-center">
+            <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                <input type="text" class="form-control" name="path" value="{{ path or '' }}" placeholder="Path filter (e.g., /docs/)">
+            </div>
             <div class="form-group" style="margin-bottom: 0;">
-                <input type="text" class="form-control" name="tag" value="{{ tag or '' }}" placeholder="Filter by tag">
+                <input type="text" class="form-control" name="tag" value="{{ tag or '' }}" placeholder="Tag filter">
             </div>
             <div class="form-group" style="margin-bottom: 0;">
                 <select class="form-control" name="content_type">
@@ -38,34 +41,38 @@
 {% elif query %}
     {% if results %}
     <div class="card">
-        <h2 class="mb-2">Found {{ results|length }} results</h2>
+        <h2 class="mb-2">Found {{ results|length }} results{% if path %} in {{ path }}{% endif %}</h2>
 
         {% for result in results %}
         <div class="search-result">
             <div class="score">{{ "%.0f"|format(result.score * 100) }}%</div>
             <div class="file-icon">
-                {% if result.content_type and result.content_type.startswith('image/') %}🖼️
-                {% elif result.content_type and result.content_type.startswith('video/') %}🎬
-                {% elif result.content_type and result.content_type.startswith('audio/') %}🎵
-                {% elif result.content_type == 'application/pdf' %}📄
-                {% elif result.content_type and 'spreadsheet' in result.content_type %}📊
-                {% elif result.content_type and 'presentation' in result.content_type %}📽️
-                {% elif result.content_type and result.content_type.startswith('text/') %}📃
-                {% else %}📁{% endif %}
+                {% if result.content_type and result.content_type.startswith('image/') %}&#128444;
+                {% elif result.content_type and result.content_type.startswith('video/') %}&#127916;
+                {% elif result.content_type and result.content_type.startswith('audio/') %}&#127925;
+                {% elif result.content_type == 'application/pdf' %}&#128196;
+                {% elif result.content_type and 'spreadsheet' in result.content_type %}&#128202;
+                {% elif result.content_type and 'presentation' in result.content_type %}&#127902;
+                {% elif result.content_type and result.content_type.startswith('text/') %}&#128195;
+                {% else %}&#128193;{% endif %}
             </div>
             <div style="flex: 1;">
                 <div class="key">
-                    <a href="/ui/content/{{ result.key }}" style="text-decoration: none; color: var(--gray-900);">
-                        {{ result.key }}
+                    <a href="/ui/content{{ result.path }}" style="text-decoration: none; color: var(--gray-900);">
+                        {{ result.filename }}
                     </a>
                 </div>
                 <div class="meta">
-                    {{ result.content_type or 'Unknown type' }}
-                    {% if result.file_size %} • {{ format_size(result.file_size) }}{% endif %}
+                    <a href="/ui/browse?path={{ result.containing_folder }}" style="text-decoration: none; color: var(--gray-500);">
+                        &#128193; {{ result.containing_folder }}
+                    </a>
+                    &bull; {{ result.content_type or 'Unknown type' }}
+                    {% if result.file_size %} &bull; {{ format_size(result.file_size) }}{% endif %}
                 </div>
             </div>
-            <div>
-                <a href="/ui/content/{{ result.key }}" class="btn btn-secondary">View</a>
+            <div class="flex gap-2">
+                <a href="/ui/browse?path={{ result.containing_folder }}" class="btn btn-secondary btn-sm" title="Browse folder">&#128193;</a>
+                <a href="/ui/content{{ result.path }}" class="btn btn-secondary">View</a>
                 {% if result.url %}
                 <a href="{{ result.url }}" class="btn btn-primary" target="_blank">Download</a>
                 {% endif %}
@@ -75,7 +82,7 @@
     </div>
     {% else %}
     <div class="card text-center">
-        <p class="text-muted">No results found for "{{ query }}"</p>
+        <p class="text-muted">No results found for "{{ query }}"{% if path %} in {{ path }}{% endif %}</p>
         <p class="text-muted">Try different keywords or remove filters</p>
     </div>
     {% endif %}

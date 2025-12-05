@@ -22,15 +22,16 @@ from semstash import SemStash
 class TestIntegrationUploadQuery:
     """Integration tests for upload and query workflow."""
 
-    def test_upload_text_and_query(
+    def test_upload_text_to_root_and_query(
         self,
         integration_stash: SemStash,
         sample_text_file: Path,
     ) -> None:
-        """Upload a text file and query for it."""
-        # Upload file
-        result = integration_stash.upload(sample_text_file)
+        """Upload a text file to root and query for it."""
+        # Upload file to root
+        result = integration_stash.upload(sample_text_file, target="/")
         assert result.key == sample_text_file.name
+        assert result.path == f"/{sample_text_file.name}"
         assert result.content_type == "text/plain"
 
         # Query for content (matches actual text file content)
@@ -41,13 +42,53 @@ class TestIntegrationUploadQuery:
             query_results, min_count=1, expected_keys=[sample_text_file.name]
         )
 
-        # Verify the specific matched result
+        # Verify the specific matched result has path
         matched_result = next(r for r in query_results if r.key == sample_text_file.name)
+        assert matched_result.path == f"/{sample_text_file.name}"
         assert_valid_search_result(
             matched_result,
             expected_key=sample_text_file.name,
             expected_content_type="text/plain",
             require_file_size=True,
+        )
+
+    def test_upload_text_to_folder_and_query(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Upload a text file to folder and query for it."""
+        # Upload file to /docs/ folder (preserves filename)
+        result = integration_stash.upload(sample_text_file, target="/docs/")
+        assert result.key == f"docs/{sample_text_file.name}"
+        assert result.path == f"/docs/{sample_text_file.name}"
+        assert result.content_type == "text/plain"
+
+        # Query should find the file
+        query_results = integration_stash.query("sample text for testing semantic storage", top_k=5)
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=[f"docs/{sample_text_file.name}"]
+        )
+
+        # Verify path in result
+        matched_result = next(r for r in query_results if r.key == f"docs/{sample_text_file.name}")
+        assert matched_result.path == f"/docs/{sample_text_file.name}"
+
+    def test_upload_with_rename_and_query(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Upload a file with renaming (no trailing slash in target)."""
+        # Upload file with explicit target path (rename on upload)
+        result = integration_stash.upload(sample_text_file, target="/renamed/readme.txt")
+        assert result.key == "renamed/readme.txt"
+        assert result.path == "/renamed/readme.txt"
+
+        # Query should find the file
+        query_results = integration_stash.query("sample text for testing semantic storage", top_k=5)
+        assert_valid_query_results(
+            query_results, min_count=1, expected_keys=["renamed/readme.txt"]
         )
 
     def test_upload_image_and_query(
@@ -56,9 +97,10 @@ class TestIntegrationUploadQuery:
         sample_image_file: Path,
     ) -> None:
         """Upload an image file and query for it."""
-        # Upload image
-        result = integration_stash.upload(sample_image_file)
+        # Upload image to root
+        result = integration_stash.upload(sample_image_file, target="/")
         assert result.key == sample_image_file.name
+        assert result.path == f"/{sample_image_file.name}"
         assert result.content_type == "image/png"
 
         # Query for image content (1x1 transparent pixel - minimal PNG)
@@ -72,71 +114,172 @@ class TestIntegrationUploadQuery:
 class TestIntegrationBrowse:
     """Integration tests for browse functionality."""
 
-    def test_browse_after_uploads(
+    def test_browse_root_after_uploads(
         self,
         integration_stash: SemStash,
         sample_text_file: Path,
         sample_json_file: Path,
     ) -> None:
-        """Browse content after uploading multiple files."""
+        """Browse root content after uploading multiple files."""
 
-        # Upload multiple files
-        integration_stash.upload(sample_text_file)
-        integration_stash.upload(sample_json_file)
+        # Upload multiple files to root
+        integration_stash.upload(sample_text_file, target="/")
+        integration_stash.upload(sample_json_file, target="/")
 
-        # Browse all content
-        result = integration_stash.browse()
+        # Browse root path
+        result = integration_stash.browse("/")
         assert len(result.items) == 2
         assert result.next_token is None  # No pagination needed
 
-        # Check file names
+        # Check file names and paths
         keys = [item.key for item in result.items]
+        paths = [item.path for item in result.items]
         assert sample_text_file.name in keys
         assert sample_json_file.name in keys
+        assert f"/{sample_text_file.name}" in paths
+        assert f"/{sample_json_file.name}" in paths
+
+    def test_browse_folder_after_uploads(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Browse folder content after uploading files to different locations."""
+
+        # Upload to different locations
+        integration_stash.upload(sample_text_file, target="/docs/")
+        integration_stash.upload(sample_json_file, target="/config/")
+
+        # Browse /docs/ folder - should only have text file
+        result = integration_stash.browse("/docs/")
+        assert len(result.items) == 1
+        assert result.items[0].key == f"docs/{sample_text_file.name}"
+        assert result.items[0].path == f"/docs/{sample_text_file.name}"
+
+        # Browse /config/ folder - should only have json file
+        result = integration_stash.browse("/config/")
+        assert len(result.items) == 1
+        assert result.items[0].key == f"config/{sample_json_file.name}"
+        assert result.items[0].path == f"/config/{sample_json_file.name}"
+
+        # Browse root - should be empty (files are in subfolders)
+        result = integration_stash.browse("/")
+        assert len(result.items) == 0
+
+    def test_browse_nonexistent_path_returns_empty(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Browse a path that doesn't exist returns empty results."""
+
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
+
+        # Browse non-existent folder
+        result = integration_stash.browse("/nonexistent/")
+        assert len(result.items) == 0
+        assert result.total == 0
 
 
 @pytest.mark.integration
 class TestIntegrationGetDelete:
     """Integration tests for get and delete functionality."""
 
-    def test_get_content(
+    def test_get_content_at_root(
         self,
         integration_stash: SemStash,
         sample_text_file: Path,
     ) -> None:
-        """Get uploaded content."""
+        """Get uploaded content at root."""
 
-        # Upload file
-        integration_stash.upload(sample_text_file)
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
 
-        # Get metadata and URL
-        result = integration_stash.get(sample_text_file.name)
+        # Get metadata and URL using path
+        result = integration_stash.get(f"/{sample_text_file.name}")
 
         assert result.key == sample_text_file.name
+        assert result.path == f"/{sample_text_file.name}"
         assert result.content_type == "text/plain"
         assert result.url is not None
         assert "https://" in result.url  # Should be a presigned S3 URL
 
-    def test_delete_content(
+    def test_get_content_in_folder(
         self,
         integration_stash: SemStash,
         sample_text_file: Path,
     ) -> None:
-        """Delete uploaded content."""
+        """Get uploaded content in folder."""
 
-        # Upload file
-        integration_stash.upload(sample_text_file)
+        # Upload file to folder
+        integration_stash.upload(sample_text_file, target="/docs/")
+
+        # Get metadata and URL using full path
+        result = integration_stash.get(f"/docs/{sample_text_file.name}")
+
+        assert result.key == f"docs/{sample_text_file.name}"
+        assert result.path == f"/docs/{sample_text_file.name}"
+        assert result.content_type == "text/plain"
+        assert result.url is not None
+
+    def test_get_nonexistent_path_raises_error(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Get non-existent path raises appropriate error."""
+
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
+
+        # Try to get file at wrong path - should raise error
+        with pytest.raises(Exception):  # Could be ContentNotFoundError or similar
+            integration_stash.get("/nonexistent/file.txt")
+
+    def test_delete_content_at_root(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Delete uploaded content at root."""
+
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
 
         # Verify it exists
-        browse_result = integration_stash.browse()
+        browse_result = integration_stash.browse("/")
         assert len(browse_result.items) == 1
 
-        # Delete it
-        result = integration_stash.delete(sample_text_file.name)
+        # Delete it using path
+        result = integration_stash.delete(f"/{sample_text_file.name}")
         assert result.deleted is True
 
         # Verify it's gone
-        browse_result = integration_stash.browse()
+        browse_result = integration_stash.browse("/")
+        assert len(browse_result.items) == 0
+
+    def test_delete_content_in_folder(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Delete uploaded content in folder."""
+
+        # Upload file to folder
+        integration_stash.upload(sample_text_file, target="/docs/")
+
+        # Verify it exists
+        browse_result = integration_stash.browse("/docs/")
+        assert len(browse_result.items) == 1
+
+        # Delete it using full path
+        result = integration_stash.delete(f"/docs/{sample_text_file.name}")
+        assert result.deleted is True
+
+        # Verify it's gone
+        browse_result = integration_stash.browse("/docs/")
         assert len(browse_result.items) == 0
 
 
@@ -151,14 +294,34 @@ class TestIntegrationCheckSync:
     ) -> None:
         """Check returns consistent state after normal operations."""
 
-        # Upload file
-        integration_stash.upload(sample_text_file)
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
 
         # Check consistency
         result = integration_stash.check()
         assert result.is_consistent is True
         assert result.content_count == 1
         assert result.vector_count == 1
+        assert len(result.orphaned_vectors) == 0
+        assert len(result.missing_vectors) == 0
+
+    def test_check_consistent_after_folder_uploads(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Check returns consistent state after folder uploads."""
+
+        # Upload files to different folders
+        integration_stash.upload(sample_text_file, target="/docs/")
+        integration_stash.upload(sample_json_file, target="/config/")
+
+        # Check consistency
+        result = integration_stash.check()
+        assert result.is_consistent is True
+        assert result.content_count == 2
+        assert result.vector_count == 2
         assert len(result.orphaned_vectors) == 0
         assert len(result.missing_vectors) == 0
 
@@ -175,7 +338,8 @@ class TestIntegrationOpenExisting:
     ) -> None:
         """Open an existing stash without re-initializing."""
         # Stash is already initialized by the session fixture
-        integration_stash.upload(sample_text_file)
+        upload_result = integration_stash.upload(sample_text_file, target="/")
+        assert upload_result.path == f"/{sample_text_file.name}"
 
         # Open existing stash with a new client
         stash2 = SemStash(integration_bucket_name)
@@ -185,8 +349,37 @@ class TestIntegrationOpenExisting:
         results = stash2.query("sample text for testing semantic storage", top_k=5)
         assert len(results) >= 1
 
+        # Verify path is correct in query results
+        matched = next((r for r in results if r.key == sample_text_file.name), None)
+        assert matched is not None
+        assert matched.path == f"/{sample_text_file.name}"
+
         # Should have same dimension
         assert stash2.dimension == 256
+
+    def test_open_existing_stash_with_folder_content(
+        self,
+        integration_stash: SemStash,
+        integration_bucket_name: str,
+        sample_text_file: Path,
+    ) -> None:
+        """Open existing stash and access content in folders."""
+        # Upload to folder
+        upload_result = integration_stash.upload(sample_text_file, target="/docs/")
+        assert upload_result.path == f"/docs/{sample_text_file.name}"
+
+        # Open existing stash with a new client
+        stash2 = SemStash(integration_bucket_name)
+        stash2.open()
+
+        # Should be able to browse and get
+        browse_result = stash2.browse("/docs/")
+        assert len(browse_result.items) == 1
+        assert browse_result.items[0].path == f"/docs/{sample_text_file.name}"
+
+        # Should be able to get using path
+        get_result = stash2.get(f"/docs/{sample_text_file.name}")
+        assert get_result.path == f"/docs/{sample_text_file.name}"
 
 
 @pytest.mark.integration
@@ -201,11 +394,12 @@ class TestIntegrationContentVerification:
     ) -> None:
         """Download text file and verify content matches original."""
 
-        # Upload file
-        integration_stash.upload(sample_text_file)
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
 
-        # Get presigned URL
-        result = integration_stash.get(sample_text_file.name)
+        # Get presigned URL using path
+        result = integration_stash.get(f"/{sample_text_file.name}")
+        assert result.path == f"/{sample_text_file.name}"
 
         # Download content using presigned URL
         response = httpx.get(result.url)
@@ -228,11 +422,12 @@ class TestIntegrationContentVerification:
     ) -> None:
         """Download image file and verify content matches original."""
 
-        # Upload image
-        integration_stash.upload(sample_image_file)
+        # Upload image to root
+        integration_stash.upload(sample_image_file, target="/")
 
-        # Get presigned URL
-        result = integration_stash.get(sample_image_file.name)
+        # Get presigned URL using path
+        result = integration_stash.get(f"/{sample_image_file.name}")
+        assert result.path == f"/{sample_image_file.name}"
 
         # Download content using presigned URL
         response = httpx.get(result.url)
@@ -255,11 +450,12 @@ class TestIntegrationContentVerification:
     ) -> None:
         """Download JSON file and verify content matches original."""
 
-        # Upload JSON
-        integration_stash.upload(sample_json_file)
+        # Upload JSON to root
+        integration_stash.upload(sample_json_file, target="/")
 
-        # Get presigned URL
-        result = integration_stash.get(sample_json_file.name)
+        # Get presigned URL using path
+        result = integration_stash.get(f"/{sample_json_file.name}")
+        assert result.path == f"/{sample_json_file.name}"
 
         # Download content using presigned URL
         response = httpx.get(result.url)
@@ -274,6 +470,27 @@ class TestIntegrationContentVerification:
         downloaded_content = downloaded_path.read_bytes()
         assert downloaded_content == original_content
 
+    def test_download_content_from_folder(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Download content from folder and verify content matches."""
+
+        # Upload to folder
+        integration_stash.upload(sample_text_file, target="/data/")
+
+        # Get using full path
+        result = integration_stash.get(f"/data/{sample_text_file.name}")
+        assert result.path == f"/data/{sample_text_file.name}"
+        assert result.key == f"data/{sample_text_file.name}"
+
+        # Download and verify
+        response = httpx.get(result.url)
+        assert response.status_code == 200
+        assert response.content == sample_text_file.read_bytes()
+
 
 @pytest.mark.integration
 class TestIntegrationTagFiltering:
@@ -286,9 +503,11 @@ class TestIntegrationTagFiltering:
         sample_json_file: Path,
     ) -> None:
         """Upload files with tags and filter by tag in query."""
-        # Upload with different tags
-        integration_stash.upload(sample_text_file, tags=["documentation", "readme"])
-        integration_stash.upload(sample_json_file, tags=["config", "settings"])
+        # Upload with different tags to root
+        result1 = integration_stash.upload(sample_text_file, target="/", tags=["documentation", "readme"])
+        result2 = integration_stash.upload(sample_json_file, target="/", tags=["config", "settings"])
+        assert result1.path == f"/{sample_text_file.name}"
+        assert result2.path == f"/{sample_json_file.name}"
 
         # Query with tag filter - should only return the text file
         results = integration_stash.query("sample content", tags=["documentation"])
@@ -297,6 +516,11 @@ class TestIntegrationTagFiltering:
         # JSON file should not be in filtered results (different tags)
         assert sample_json_file.name not in keys
 
+        # Verify path is present in results
+        matched = next((r for r in results if r.key == sample_text_file.name), None)
+        assert matched is not None
+        assert matched.path == f"/{sample_text_file.name}"
+
     def test_query_with_multiple_tags(
         self,
         integration_stash: SemStash,
@@ -304,16 +528,18 @@ class TestIntegrationTagFiltering:
         sample_json_file: Path,
     ) -> None:
         """Query with multiple tags uses OR logic (any match)."""
-        # Upload with different tags
-        integration_stash.upload(sample_text_file, tags=["type-a", "category-1"])
-        integration_stash.upload(sample_json_file, tags=["type-b", "category-2"])
+        # Upload with different tags to folders
+        result1 = integration_stash.upload(sample_text_file, target="/docs/", tags=["type-a", "category-1"])
+        result2 = integration_stash.upload(sample_json_file, target="/config/", tags=["type-b", "category-2"])
+        assert result1.path == f"/docs/{sample_text_file.name}"
+        assert result2.path == f"/config/{sample_json_file.name}"
 
         # Query with multiple tags - should return files matching any tag
         results = integration_stash.query("content", tags=["type-a", "type-b"])
         assert_valid_query_results(
             results,
             min_count=2,
-            expected_keys=[sample_text_file.name, sample_json_file.name],
+            expected_keys=[f"docs/{sample_text_file.name}", f"config/{sample_json_file.name}"],
         )
 
     def test_query_with_nonexistent_tag(
@@ -322,8 +548,8 @@ class TestIntegrationTagFiltering:
         sample_text_file: Path,
     ) -> None:
         """Query with non-existent tag returns no results."""
-        # Upload file with specific tags
-        integration_stash.upload(sample_text_file, tags=["existing-tag"])
+        # Upload file with specific tags to root
+        integration_stash.upload(sample_text_file, target="/", tags=["existing-tag"])
 
         # Query with a tag that doesn't exist
         results = integration_stash.query("sample content", tags=["nonexistent-tag"])
@@ -341,9 +567,10 @@ class TestIntegrationDocuments:
         sample_pdf_file: Path,
     ) -> None:
         """Upload PDF and query for its content."""
-        # Upload PDF (contains text about machine learning)
-        result = integration_stash.upload(sample_pdf_file)
+        # Upload PDF (contains text about machine learning) to root
+        result = integration_stash.upload(sample_pdf_file, target="/")
         assert result.key == sample_pdf_file.name
+        assert result.path == f"/{sample_pdf_file.name}"
         assert result.content_type == "application/pdf"
 
         # Query for content that's in the PDF
@@ -352,21 +579,27 @@ class TestIntegrationDocuments:
         )
         assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_pdf_file.name])
 
+        # Verify path in result
+        matched = next((r for r in query_results if r.key == sample_pdf_file.name), None)
+        assert matched is not None
+        assert matched.path == f"/{sample_pdf_file.name}"
+
     def test_upload_docx_and_query(
         self,
         integration_stash: SemStash,
         sample_docx_file: Path,
     ) -> None:
         """Upload DOCX and query for its content."""
-        # Upload DOCX (contains text about semantic storage architecture)
-        result = integration_stash.upload(sample_docx_file)
-        assert result.key == sample_docx_file.name
+        # Upload DOCX (contains text about semantic storage architecture) to folder
+        result = integration_stash.upload(sample_docx_file, target="/documents/")
+        assert result.key == f"documents/{sample_docx_file.name}"
+        assert result.path == f"/documents/{sample_docx_file.name}"
         assert "wordprocessingml" in result.content_type
 
         # Query for content that's in the DOCX
         query_results = integration_stash.query("semantic storage architecture embeddings", top_k=5)
         assert_valid_query_results(
-            query_results, min_count=1, expected_keys=[sample_docx_file.name]
+            query_results, min_count=1, expected_keys=[f"documents/{sample_docx_file.name}"]
         )
 
     def test_upload_pptx_and_query(
@@ -375,9 +608,10 @@ class TestIntegrationDocuments:
         sample_pptx_file: Path,
     ) -> None:
         """Upload PPTX and query for its content."""
-        # Upload PPTX (contains text about REST API design)
-        result = integration_stash.upload(sample_pptx_file)
+        # Upload PPTX (contains text about REST API design) to root
+        result = integration_stash.upload(sample_pptx_file, target="/")
         assert result.key == sample_pptx_file.name
+        assert result.path == f"/{sample_pptx_file.name}"
         assert "presentationml" in result.content_type
 
         # Query for content that's in the PPTX
@@ -392,9 +626,10 @@ class TestIntegrationDocuments:
         sample_xlsx_file: Path,
     ) -> None:
         """Upload XLSX and query for its content."""
-        # Upload XLSX (contains quarterly sales data)
-        result = integration_stash.upload(sample_xlsx_file)
+        # Upload XLSX (contains quarterly sales data) to root
+        result = integration_stash.upload(sample_xlsx_file, target="/")
         assert result.key == sample_xlsx_file.name
+        assert result.path == f"/{sample_xlsx_file.name}"
         assert "spreadsheetml" in result.content_type
 
         # Query for content that's in the XLSX (converted to CSV/text)
@@ -410,11 +645,12 @@ class TestIntegrationDocuments:
         tmp_path: Path,
     ) -> None:
         """Download PDF file and verify content matches original."""
-        # Upload PDF
-        integration_stash.upload(sample_pdf_file)
+        # Upload PDF to root
+        integration_stash.upload(sample_pdf_file, target="/")
 
-        # Get presigned URL
-        result = integration_stash.get(sample_pdf_file.name)
+        # Get presigned URL using path
+        result = integration_stash.get(f"/{sample_pdf_file.name}")
+        assert result.path == f"/{sample_pdf_file.name}"
         assert result.content_type == "application/pdf"
 
         # Download content using presigned URL
@@ -437,11 +673,12 @@ class TestIntegrationDocuments:
         tmp_path: Path,
     ) -> None:
         """Download DOCX file and verify content matches original."""
-        # Upload DOCX
-        integration_stash.upload(sample_docx_file)
+        # Upload DOCX to root
+        integration_stash.upload(sample_docx_file, target="/")
 
-        # Get presigned URL
-        result = integration_stash.get(sample_docx_file.name)
+        # Get presigned URL using path
+        result = integration_stash.get(f"/{sample_docx_file.name}")
+        assert result.path == f"/{sample_docx_file.name}"
 
         # Download content using presigned URL
         response = httpx.get(result.url)
@@ -464,13 +701,158 @@ class TestIntegrationDocuments:
         sample_jpg_file: Path,
     ) -> None:
         """Upload multiple document types and query across them."""
-        # Upload all documents (they all contain the same sample.jpg image)
-        integration_stash.upload(sample_pdf_file)
-        integration_stash.upload(sample_docx_file)
-        integration_stash.upload(sample_jpg_file)
+        # Upload all documents to root (they all contain the same sample.jpg image)
+        integration_stash.upload(sample_pdf_file, target="/")
+        integration_stash.upload(sample_docx_file, target="/")
+        integration_stash.upload(sample_jpg_file, target="/")
 
         # Query for landscape/nature content (common in the image)
         query_results = integration_stash.query("landscape nature scenery", top_k=5)
 
         # At minimum the JPG should match with valid scores
         assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_jpg_file.name])
+
+        # Verify path is present in results
+        for r in query_results:
+            assert r.path.startswith("/")
+            assert r.path == f"/{r.key}"
+
+
+@pytest.mark.integration
+class TestIntegrationPathFiltering:
+    """Integration tests for path-based query filtering."""
+
+    def test_query_with_path_filter_finds_content(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query with path filter finds content in specified folder."""
+        # Upload files to different folders
+        integration_stash.upload(sample_text_file, target="/docs/")
+        integration_stash.upload(sample_json_file, target="/config/")
+
+        # Query with path filter for /docs/ - should find only the text file
+        results = integration_stash.query("sample content", path="/docs/")
+        assert len(results) >= 1
+        keys = [r.key for r in results]
+        assert f"docs/{sample_text_file.name}" in keys
+        # JSON file should NOT be in results (different folder)
+        assert f"config/{sample_json_file.name}" not in keys
+
+        # Verify path is correct in results
+        for r in results:
+            assert r.path.startswith("/docs/")
+
+    def test_query_with_path_filter_excludes_other_folders(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query with path filter excludes content from other folders."""
+        # Upload files to different folders
+        integration_stash.upload(sample_text_file, target="/folder-a/")
+        integration_stash.upload(sample_json_file, target="/folder-b/")
+
+        # Query with path filter for /folder-b/
+        results = integration_stash.query("content", path="/folder-b/")
+
+        # Should only find JSON file
+        keys = [r.key for r in results]
+        assert f"folder-a/{sample_text_file.name}" not in keys
+
+        # All results should be from /folder-b/
+        for r in results:
+            assert r.path.startswith("/folder-b/")
+
+    def test_query_with_nonexistent_path_returns_empty(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Query with non-existent path filter returns no results."""
+        # Upload file to root
+        integration_stash.upload(sample_text_file, target="/")
+
+        # Query with path filter for non-existent folder
+        results = integration_stash.query("sample content", path="/nonexistent/")
+
+        # Should return empty list since no content matches the path
+        assert len(results) == 0
+
+    def test_query_with_nested_path_filter(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query with nested path filter works correctly."""
+        # Upload files to nested folders
+        integration_stash.upload(sample_text_file, target="/docs/guides/")
+        integration_stash.upload(sample_json_file, target="/docs/api/")
+
+        # Query with path filter for /docs/guides/
+        results = integration_stash.query("content", path="/docs/guides/")
+
+        # Should find text file only
+        keys = [r.key for r in results]
+        assert f"docs/guides/{sample_text_file.name}" in keys
+        assert f"docs/api/{sample_json_file.name}" not in keys
+
+    def test_query_with_root_path_finds_all(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query with root path '/' finds content at root only."""
+        # Upload one file to root and one to folder
+        integration_stash.upload(sample_text_file, target="/")
+        integration_stash.upload(sample_json_file, target="/subfolder/")
+
+        # Query with path filter for root
+        results = integration_stash.query("content", path="/")
+
+        # Should find text file (at root)
+        keys = [r.key for r in results]
+        assert sample_text_file.name in keys
+
+    def test_query_without_path_finds_everywhere(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query without path filter finds content everywhere."""
+        # Upload files to different locations
+        integration_stash.upload(sample_text_file, target="/docs/")
+        integration_stash.upload(sample_json_file, target="/config/")
+
+        # Query without path filter
+        results = integration_stash.query("content")
+
+        # Should find both files
+        keys = [r.key for r in results]
+        assert f"docs/{sample_text_file.name}" in keys
+        assert f"config/{sample_json_file.name}" in keys
+
+    def test_query_with_path_and_tags_combined(
+        self,
+        integration_stash: SemStash,
+        sample_text_file: Path,
+        sample_json_file: Path,
+    ) -> None:
+        """Query with both path and tag filters works correctly."""
+        # Upload files with tags to different folders
+        integration_stash.upload(sample_text_file, target="/docs/", tags=["important"])
+        integration_stash.upload(sample_json_file, target="/docs/", tags=["config"])
+
+        # Query with path AND tag filter
+        results = integration_stash.query("content", path="/docs/", tags=["important"])
+
+        # Should find only the text file (matches both path and tag)
+        keys = [r.key for r in results]
+        assert f"docs/{sample_text_file.name}" in keys
+        assert f"docs/{sample_json_file.name}" not in keys

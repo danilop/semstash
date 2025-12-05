@@ -48,7 +48,8 @@ class StorageItem(BaseModel):
     Represents a single item in semantic storage.
     """
 
-    key: str = Field(description="Unique key for this content")
+    key: str = Field(description="Internal S3 key for this content")
+    path: str = Field(description="User-facing path with leading /")
     content_type: str = Field(description="MIME type: image/jpeg, text/plain, etc.")
     file_size: int = Field(description="Size in bytes")
     created_at: datetime
@@ -67,6 +68,7 @@ class SearchResult(BaseModel):
     """
 
     key: str
+    path: str = Field(default="", description="User-facing path with leading /")
     score: float = Field(ge=0, le=1, description="Similarity score, 1 = exact match")
     distance: float = Field(default=0.0, description="Raw distance from query vector")
     content_type: str | None = Field(default=None)
@@ -83,7 +85,8 @@ class UploadResult(BaseModel):
     Includes the storage key and metadata.
     """
 
-    key: str = Field(description="Storage key for this content")
+    key: str = Field(description="Internal S3 key for this content")
+    path: str = Field(description="User-facing path with leading /")
     content_type: str
     file_size: int
     dimension: int = Field(description="Embedding dimension used")
@@ -97,6 +100,7 @@ class GetResult(BaseModel):
     """
 
     key: str
+    path: str = Field(description="User-facing path with leading /")
     content_type: str
     file_size: int
     created_at: datetime

@@ -3,29 +3,36 @@
 Provides a simple interface for storing content with semantic embeddings
 and searching using natural language queries.
 
+All content is addressed by paths (like a filesystem), with '/' as root.
+Paths map 1:1 to S3 prefixes.
+
 Example:
     from semstash import SemStash
 
     # Create client with bucket name
     stash = SemStash("my-bucket")
 
-    # Upload content
-    result = stash.upload("photo.jpg", tags=["vacation", "beach"])
-    print(f"Stored as: {result.key}")
+    # Upload content - target path is mandatory
+    # '/' = root, '/docs/' = docs folder (preserves filename)
+    result = stash.upload("photo.jpg", "/images/", tags=["vacation", "beach"])
+    print(f"Stored at: {result.path}")
 
-    # Query semantically
-    for item in stash.query("sunset on beach", top_k=5):
-        print(f"{item.score:.2f} - {item.key}")
+    # Query semantically (optionally filter by path)
+    for item in stash.query("sunset on beach", top_k=5, path="/images/"):
+        print(f"{item.score:.2f} - {item.path}")
 
-    # Get content metadata
-    content = stash.get("photo.jpg")
+    # Get content metadata by path
+    content = stash.get("/images/photo.jpg")
     print(f"URL: {content.url}")
 
-    # Download content
-    stash.download("photo.jpg", "./local-photo.jpg")
+    # Download content by path
+    stash.download("/images/photo.jpg", "./local-photo.jpg")
 
-    # Delete content
-    stash.delete("photo.jpg")
+    # Browse a path
+    items = stash.browse("/images/")
+
+    # Delete content by path
+    stash.delete("/images/photo.jpg")
 """
 
 import tempfile
@@ -57,6 +64,7 @@ from semstash.models import (
     UsageStats,
 )
 from semstash.storage import ContentStorage, VectorStorage
+from semstash.utils import key_to_path, normalize_path, path_to_key, resolve_upload_target
 
 
 class SemStash:
@@ -66,9 +74,9 @@ class SemStash:
     for semantic search across text, images, audio, and video.
 
     Example:
-        # Simple usage
+        # Simple usage - target path is required
         stash = SemStash("my-bucket")
-        stash.upload("document.pdf")
+        stash.upload("document.pdf", target="/")  # Upload to root
         results = stash.query("quarterly revenue", top_k=5)
 
         # With configuration
@@ -80,7 +88,7 @@ class SemStash:
 
         # Context manager
         with SemStash("my-bucket") as stash:
-            stash.upload("file.txt")
+            stash.upload("file.txt", target="/docs/")  # Upload to folder
     """
 
     def __init__(
@@ -337,7 +345,7 @@ class SemStash:
     def upload(
         self,
         file_path: str | Path,
-        key: str | None = None,
+        target: str,
         tags: list[str] | None = None,
         metadata: dict[str, str] | None = None,
         content_type: str | None = None,
@@ -349,28 +357,38 @@ class SemStash:
 
         Args:
             file_path: Path to the file to upload.
-            key: Storage key (defaults to filename).
+            target: Target path in the stash. If ends with '/', filename is
+                preserved (folder semantics). Otherwise, used as exact path
+                (rename semantics).
+                Examples:
+                    '/' -> stores at root with original filename
+                    '/docs/' -> stores in /docs/ with original filename
+                    '/docs/readme.txt' -> stores as /docs/readme.txt
             tags: Optional tags for filtering.
             metadata: Optional custom metadata.
             content_type: MIME type (auto-detected if None).
             force: If True, overwrite existing content. If False (default),
-                raise ContentExistsError if key already exists.
+                raise ContentExistsError if path already exists.
 
         Returns:
-            UploadResult with storage details.
+            UploadResult with storage details including path.
 
         Raises:
             FileNotFoundError: If file doesn't exist.
-            ContentExistsError: If key exists and force=False.
+            ContentExistsError: If path exists and force=False.
             UnsupportedContentTypeError: If content type cannot be embedded.
             StorageError: If upload fails.
             EmbeddingError: If embedding generation fails.
+            ValueError: If target is empty.
         """
         self._ensure_initialized()
 
         file_path = Path(file_path)
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Resolve target to key and path
+        key, path = resolve_upload_target(file_path, target)
 
         # Upload to S3
         storage_item = self._content_storage.upload(  # type: ignore
@@ -393,11 +411,12 @@ class SemStash:
             content_type=storage_item.content_type,
         )
 
-        # Store embedding with metadata
+        # Store embedding with metadata (including path for filtering)
         vector_metadata: dict[str, Any] = {
             "content_type": storage_item.content_type,
             "file_size": storage_item.file_size,
             "created_at": storage_item.created_at.isoformat(),
+            "path": path,  # Store path for path-based filtering
         }
         if tags:
             vector_metadata["tags"] = tags  # Store as list for native S3 Vectors filtering
@@ -412,11 +431,86 @@ class SemStash:
 
         return UploadResult(
             key=storage_item.key,
+            path=path,
             content_type=storage_item.content_type,
             file_size=storage_item.file_size,
             dimension=self.config.dimension,
             created_at=storage_item.created_at,
         )
+
+    def upload_directory(
+        self,
+        source_dir: str | Path,
+        target_path: str,
+        pattern: str = "**/*",
+        tags: list[str] | None = None,
+        force: bool = False,
+    ) -> list[UploadResult]:
+        """Upload all files from a directory to semantic storage.
+
+        Recursively uploads files matching the pattern, preserving directory
+        structure relative to source_dir.
+
+        Args:
+            source_dir: Local directory to upload from.
+            target_path: Target path in the stash. Must end with '/'.
+                Example: '/docs/' uploads to /docs/ preserving subdirectory structure.
+            pattern: Glob pattern to match files (default: '**/*' for all files).
+            tags: Optional tags to apply to all uploaded files.
+            force: If True, overwrite existing content.
+
+        Returns:
+            List of UploadResult for each successfully uploaded file.
+
+        Raises:
+            ValueError: If target_path doesn't end with '/'.
+            NotADirectoryError: If source_dir doesn't exist or isn't a directory.
+            StorageError: If upload fails.
+
+        Example:
+            # Upload all markdown files from docs/ to /docs/
+            results = stash.upload_directory('./docs/', '/docs/', pattern='**/*.md')
+            print(f"Uploaded {len(results)} files")
+        """
+        self._ensure_initialized()
+
+        source_dir = Path(source_dir)
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise NotADirectoryError(f"Directory not found: {source_dir}")
+
+        # Ensure target_path ends with /
+        if not target_path.endswith("/"):
+            raise ValueError("target_path must end with '/' for directory uploads")
+
+        # Normalize target path
+        target_path = normalize_path(target_path)
+
+        # Find all matching files
+        results: list[UploadResult] = []
+        for file_path in source_dir.glob(pattern):
+            if file_path.is_file():
+                # Calculate relative path from source_dir
+                relative_path = file_path.relative_to(source_dir)
+
+                # Build target path: target_path + relative_path
+                # e.g., target_path='/docs/', relative_path='subdir/file.txt'
+                # -> full_target='/docs/subdir/file.txt'
+                full_target = f"{target_path}{relative_path.as_posix()}"
+
+                try:
+                    result = self.upload(
+                        file_path=file_path,
+                        target=full_target,
+                        tags=tags,
+                        force=force,
+                    )
+                    results.append(result)
+                except Exception:
+                    # Skip files that can't be uploaded (unsupported types, etc.)
+                    # TODO: Consider returning a summary of failures
+                    pass
+
+        return results
 
     def query(
         self,
@@ -424,6 +518,7 @@ class SemStash:
         top_k: int | None = None,
         content_type: str | None = None,
         tags: list[str] | None = None,
+        path: str | None = None,
         include_url: bool = True,
         url_expiry: int | None = None,
     ) -> list[SearchResult]:
@@ -434,6 +529,7 @@ class SemStash:
             top_k: Maximum number of results (default: config.search_top_k).
             content_type: Filter by content type.
             tags: Filter by tags (any match).
+            path: Filter by path prefix (e.g., '/docs/' to search only in docs).
             include_url: Include presigned download URLs.
             url_expiry: Presigned URL expiry in seconds (default: config.presigned_url_expiry).
 
@@ -456,7 +552,7 @@ class SemStash:
         query_embedding = self._embedding_generator.embed_text(query_text)  # type: ignore
 
         # Build native S3 Vectors filter expression
-        filter_expr = self._build_filter_expression(content_type=content_type, tags=tags)
+        filter_expr = self._build_filter_expression(content_type=content_type, tags=tags, path=path)
 
         # Query vectors with server-side filtering
         results = self._vector_storage.query(  # type: ignore
@@ -471,6 +567,9 @@ class SemStash:
             # Add URL if requested
             if include_url:
                 result.url = self._content_storage.get_presigned_url(result.key, expiry=url_expiry)  # type: ignore
+
+            # Fill in path from vector metadata (or compute from key)
+            result.path = result.metadata.get("path", key_to_path(result.key))
 
             # Fill in content metadata from vector metadata
             result.content_type = result.metadata.get("content_type")
@@ -490,12 +589,14 @@ class SemStash:
         self,
         content_type: str | None = None,
         tags: list[str] | None = None,
+        path: str | None = None,
     ) -> dict[str, Any] | None:
         """Build S3 Vectors native filter expression.
 
         Args:
             content_type: Filter by exact content type match.
             tags: Filter by tags (any match using $in operator).
+            path: Filter by path prefix (e.g., '/docs/' matches '/docs/file.txt').
 
         Returns:
             S3 Vectors filter expression dict, or None if no filters.
@@ -511,6 +612,11 @@ class SemStash:
             # S3 Vectors $in on array metadata returns true if any element matches
             filters.append({"tags": {"$in": tags}})
 
+        if path:
+            # Filter by path prefix using $startsWith
+            normalized_path = normalize_path(path)
+            filters.append({"path": {"$startsWith": normalized_path}})
+
         if not filters:
             return None
         elif len(filters) == 1:
@@ -519,11 +625,11 @@ class SemStash:
             # Combine with $and
             return {"$and": filters}
 
-    def get(self, key: str, url_expiry: int | None = None) -> GetResult:
+    def get(self, path: str, url_expiry: int | None = None) -> GetResult:
         """Get content metadata and download URL.
 
         Args:
-            key: Storage key of the content.
+            path: Path of the content (e.g., '/docs/readme.txt').
             url_expiry: Presigned URL expiry in seconds (default: config.presigned_url_expiry).
 
         Returns:
@@ -538,6 +644,10 @@ class SemStash:
         if url_expiry is None:
             url_expiry = self.config.presigned_url_expiry
 
+        # Convert path to key
+        key = path_to_key(path)
+        normalized_path = normalize_path(path)
+
         # Get S3 metadata
         storage_item = self._content_storage.get_metadata(key)  # type: ignore
 
@@ -546,6 +656,7 @@ class SemStash:
 
         return GetResult(
             key=storage_item.key,
+            path=normalized_path,
             content_type=storage_item.content_type,
             file_size=storage_item.file_size,
             created_at=storage_item.created_at,
@@ -554,13 +665,13 @@ class SemStash:
             url=url,
         )
 
-    def download(self, key: str, destination: str | Path) -> Path:
+    def download(self, path: str, destination: str | Path) -> Path:
         """Download content to a local file.
 
         Args:
-            key: Storage key of the content.
+            path: Path of the content (e.g., '/docs/readme.txt').
             destination: Local path to save the file. If a directory is given,
-                the file is saved with its original key name.
+                the file is saved with its original filename.
 
         Returns:
             Path to the downloaded file.
@@ -571,18 +682,20 @@ class SemStash:
 
         Example:
             # Download to specific file
-            stash.download("photo.jpg", "./local-photo.jpg")
+            stash.download("/photo.jpg", "./local-photo.jpg")
 
             # Download to directory (uses original filename)
-            stash.download("photo.jpg", "./downloads/")
+            stash.download("/photos/beach.jpg", "./downloads/")
         """
         self._ensure_initialized()
 
+        # Convert path to key
+        key = path_to_key(path)
         destination = Path(destination)
 
-        # If destination is a directory, use the key as filename
+        # If destination is a directory, use the filename from path
         if destination.is_dir():
-            # Extract just the filename from the key (handle paths in keys)
+            # Extract just the filename from the path
             filename = Path(key).name
             destination = destination / filename
 
@@ -594,13 +707,13 @@ class SemStash:
 
         return destination
 
-    def delete(self, key: str) -> DeleteResult:
+    def delete(self, path: str) -> DeleteResult:
         """Delete content from storage.
 
         Removes both the S3 object and its vector embedding.
 
         Args:
-            key: Storage key of the content.
+            path: Path of the content (e.g., '/docs/readme.txt').
 
         Returns:
             DeleteResult with deletion details.
@@ -609,6 +722,9 @@ class SemStash:
             StorageError: If deletion fails.
         """
         self._ensure_initialized()
+
+        # Convert path to key
+        key = path_to_key(path)
 
         # Delete from S3
         self._content_storage.delete(key)  # type: ignore
@@ -623,15 +739,16 @@ class SemStash:
 
     def browse(
         self,
-        prefix: str = "",
+        path: str,
         content_type: str | None = None,
         limit: int | None = None,
         continuation_token: str | None = None,
     ) -> BrowseResult:
-        """Browse stored content.
+        """Browse stored content at a path.
 
         Args:
-            prefix: Filter by key prefix.
+            path: Path to browse (e.g., '/' for root, '/docs/' for docs folder).
+                Must be '/' or end with '/'.
             content_type: Filter by content type.
             limit: Maximum results per page (default: config.browse_limit).
             continuation_token: Token for pagination.
@@ -644,6 +761,9 @@ class SemStash:
         # Use config default if not specified
         if limit is None:
             limit = self.config.browse_limit
+
+        # Convert path to S3 prefix
+        prefix = path_to_key(path)
 
         items, next_token = self._content_storage.list_objects(  # type: ignore
             prefix=prefix,

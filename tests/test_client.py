@@ -270,25 +270,34 @@ class TestSemStashOpenMethod:
 class TestSemStashUpload:
     """Tests for upload functionality."""
 
-    def test_upload_text_file(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Upload text file."""
-        result = stash.upload(sample_text_file)
+    def test_upload_text_file_to_root(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Upload text file to root."""
+        result = stash.upload(sample_text_file, target="/")
 
         assert isinstance(result, UploadResult)
         assert result.key == sample_text_file.name
+        assert result.path == f"/{sample_text_file.name}"
         assert result.content_type == "text/plain"
         assert result.file_size > 0
         assert result.dimension == 3072
 
-    def test_upload_with_custom_key(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Upload with custom key."""
-        result = stash.upload(sample_text_file, key="custom/path/file.txt")
+    def test_upload_to_folder(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Upload to folder preserves filename."""
+        result = stash.upload(sample_text_file, target="/docs/")
 
-        assert result.key == "custom/path/file.txt"
+        assert result.key == f"docs/{sample_text_file.name}"
+        assert result.path == f"/docs/{sample_text_file.name}"
+
+    def test_upload_with_rename(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Upload with rename (no trailing slash)."""
+        result = stash.upload(sample_text_file, target="/docs/readme.txt")
+
+        assert result.key == "docs/readme.txt"
+        assert result.path == "/docs/readme.txt"
 
     def test_upload_with_tags(self, stash: SemStash, sample_text_file: Path) -> None:
         """Upload with tags."""
-        result = stash.upload(sample_text_file, tags=["test", "document"])
+        result = stash.upload(sample_text_file, target="/", tags=["test", "document"])
 
         assert result.key == sample_text_file.name
 
@@ -296,6 +305,7 @@ class TestSemStashUpload:
         """Upload with custom metadata."""
         result = stash.upload(
             sample_text_file,
+            target="/",
             metadata={"author": "test", "version": "1.0"},
         )
 
@@ -303,14 +313,14 @@ class TestSemStashUpload:
 
     def test_upload_image(self, stash: SemStash, sample_image_file: Path) -> None:
         """Upload image file."""
-        result = stash.upload(sample_image_file)
+        result = stash.upload(sample_image_file, target="/")
 
         assert result.content_type == "image/png"
 
     def test_upload_nonexistent_file(self, stash: SemStash, tmp_path: Path) -> None:
         """Upload nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            stash.upload(tmp_path / "nonexistent.txt")
+            stash.upload(tmp_path / "nonexistent.txt", target="/")
 
     def test_upload_unsupported_type(self, stash: SemStash, tmp_path: Path) -> None:
         """Upload unsupported type raises error."""
@@ -318,26 +328,26 @@ class TestSemStashUpload:
         binary_file.write_bytes(b"\x00\x01\x02\x03")
 
         with pytest.raises(UnsupportedContentTypeError):
-            stash.upload(binary_file)
+            stash.upload(binary_file, target="/")
 
     def test_upload_existing_raises_error(self, stash: SemStash, sample_text_file: Path) -> None:
         """Upload to existing key raises ContentExistsError by default."""
         # First upload succeeds
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
-        # Second upload to same key fails
+        # Second upload to same path fails
         with pytest.raises(ContentExistsError) as exc_info:
-            stash.upload(sample_text_file)
+            stash.upload(sample_text_file, target="/")
 
         assert "already exists" in str(exc_info.value)
 
     def test_upload_existing_with_force(self, stash: SemStash, sample_text_file: Path) -> None:
         """Upload with force=True overwrites existing content."""
         # First upload
-        result1 = stash.upload(sample_text_file)
+        result1 = stash.upload(sample_text_file, target="/")
 
         # Second upload with force=True succeeds
-        result2 = stash.upload(sample_text_file, force=True)
+        result2 = stash.upload(sample_text_file, target="/", force=True)
 
         assert result2.key == result1.key
 
@@ -354,7 +364,7 @@ class TestSemStashQuery:
         from helpers import assert_valid_query_results, assert_valid_search_result
 
         # Upload some content first
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         results = stash.query("test query", top_k=5)
 
@@ -378,7 +388,7 @@ class TestSemStashQuery:
         """Query with content type filter returns valid results."""
         from helpers import assert_valid_query_results
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         results = stash.query(
             "test query",
@@ -397,7 +407,7 @@ class TestSemStashQuery:
         """Query without including URLs still returns valid scores."""
         from helpers import assert_valid_query_results
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         results = stash.query("test query", include_url=False)
 
@@ -415,12 +425,31 @@ class TestSemStashQuery:
         """Query with tag filter returns valid results."""
         from helpers import assert_valid_query_results
 
-        stash.upload(sample_text_file, tags=["test", "sample"])
+        stash.upload(sample_text_file, target="/", tags=["test", "sample"])
 
         results = stash.query("test query", tags=["test"])
 
         assert isinstance(results, list)
         assert_valid_query_results(results, min_count=1)
+
+    def test_query_with_path_filter(
+        self,
+        stash: SemStash,
+        sample_text_file: Path,
+    ) -> None:
+        """Query with path filter returns only matching results."""
+        from helpers import assert_valid_query_results
+
+        stash.upload(sample_text_file, target="/docs/")
+
+        # Query with path filter should find it
+        results = stash.query("test query", path="/docs/")
+
+        assert isinstance(results, list)
+        assert_valid_query_results(results, min_count=1)
+        # Verify path prefix
+        for r in results:
+            assert r.path.startswith("/docs/")
 
 
 class TestBuildFilterExpression:
@@ -454,62 +483,108 @@ class TestBuildFilterExpression:
             ]
         }
 
+    def test_path_filter(self, stash: SemStash) -> None:
+        """Returns $startsWith filter for path."""
+        result = stash._build_filter_expression(path="/docs/")
+        assert result == {"path": {"$startsWith": "/docs/"}}
+
+    def test_all_filters(self, stash: SemStash) -> None:
+        """Returns $and filter with all conditions."""
+        result = stash._build_filter_expression(
+            content_type="text/plain",
+            tags=["doc"],
+            path="/docs/",
+        )
+        assert result == {
+            "$and": [
+                {"content_type": {"$eq": "text/plain"}},
+                {"tags": {"$in": ["doc"]}},
+                {"path": {"$startsWith": "/docs/"}},
+            ]
+        }
+
 
 class TestSemStashGet:
     """Tests for get functionality."""
 
     def test_get_existing(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Get existing content."""
-        stash.upload(sample_text_file)
+        """Get existing content by path."""
+        stash.upload(sample_text_file, target="/")
 
-        result = stash.get(sample_text_file.name)
+        result = stash.get(f"/{sample_text_file.name}")
 
         assert isinstance(result, GetResult)
         assert result.key == sample_text_file.name
+        assert result.path == f"/{sample_text_file.name}"
         assert result.url is not None
+
+    def test_get_nested_path(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Get content from nested path."""
+        stash.upload(sample_text_file, target="/docs/")
+
+        result = stash.get(f"/docs/{sample_text_file.name}")
+
+        assert isinstance(result, GetResult)
+        assert result.key == f"docs/{sample_text_file.name}"
+        assert result.path == f"/docs/{sample_text_file.name}"
 
     def test_get_nonexistent(self, stash: SemStash) -> None:
         """Get nonexistent content raises error."""
         with pytest.raises(ContentNotFoundError):
-            stash.get("nonexistent.txt")
+            stash.get("/nonexistent.txt")
 
 
 class TestSemStashDelete:
     """Tests for delete functionality."""
 
     def test_delete_existing(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Delete existing content."""
-        stash.upload(sample_text_file)
+        """Delete existing content by path."""
+        stash.upload(sample_text_file, target="/")
 
-        result = stash.delete(sample_text_file.name)
+        result = stash.delete(f"/{sample_text_file.name}")
 
         assert isinstance(result, DeleteResult)
         assert result.key == sample_text_file.name
+        assert result.deleted is True
+
+    def test_delete_nested_path(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Delete content from nested path."""
+        stash.upload(sample_text_file, target="/docs/")
+
+        result = stash.delete(f"/docs/{sample_text_file.name}")
+
+        assert isinstance(result, DeleteResult)
+        assert result.key == f"docs/{sample_text_file.name}"
         assert result.deleted is True
 
 
 class TestSemStashBrowse:
     """Tests for browse functionality."""
 
-    def test_browse_all(
+    def test_browse_root(
         self, stash: SemStash, sample_text_file: Path, sample_json_file: Path
     ) -> None:
-        """Browse all content."""
-        stash.upload(sample_text_file)
-        stash.upload(sample_json_file)
+        """Browse root path."""
+        stash.upload(sample_text_file, target="/")
+        stash.upload(sample_json_file, target="/")
 
-        result = stash.browse()
+        result = stash.browse("/")
 
         assert isinstance(result, BrowseResult)
         assert result.total >= 0
+        # Verify items have paths
+        for item in result.items:
+            assert item.path.startswith("/")
 
-    def test_browse_with_prefix(self, stash: SemStash, sample_text_file: Path) -> None:
-        """Browse with prefix filter."""
-        stash.upload(sample_text_file, key="docs/file.txt")
+    def test_browse_folder(self, stash: SemStash, sample_text_file: Path) -> None:
+        """Browse folder path."""
+        stash.upload(sample_text_file, target="/docs/")
 
-        result = stash.browse(prefix="docs/")
+        result = stash.browse("/docs/")
 
         assert isinstance(result, BrowseResult)
+        for item in result.items:
+            assert item.path.startswith("/docs/")
 
 
 class TestSemStashStats:
@@ -517,7 +592,7 @@ class TestSemStashStats:
 
     def test_get_stats(self, stash: SemStash, sample_text_file: Path) -> None:
         """Get storage statistics."""
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         stats = stash.get_stats()
 
@@ -546,7 +621,7 @@ class TestSemStashCheck:
         """Check storage with matching content and vectors."""
         from semstash.models import CheckResult
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         result = stash.check()
 
@@ -563,7 +638,7 @@ class TestSemStashSync:
         """Sync when storage is already consistent."""
         from semstash.models import SyncResult
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         result = stash.sync()
 
@@ -607,7 +682,7 @@ class TestSemStashDestroy:
         """Destroy with content requires force=True."""
         from semstash.exceptions import StorageError
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         with pytest.raises(StorageError) as exc_info:
             stash.destroy(force=False)
@@ -623,7 +698,7 @@ class TestSemStashDestroy:
         """Destroy with force=True deletes everything."""
         from semstash.models import DestroyResult
 
-        stash.upload(sample_text_file)
+        stash.upload(sample_text_file, target="/")
 
         result = stash.destroy(force=True)
 

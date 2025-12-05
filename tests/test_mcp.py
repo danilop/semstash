@@ -57,26 +57,51 @@ class TestMCPUpload:
 
     @patch("semstash.mcp_server.get_cached_stash")
     def test_upload_success(self, mock_get_stash: MagicMock, sample_text_file: Path) -> None:
-        """Upload tool uploads file."""
+        """Upload tool uploads file to root."""
         mock_stash = MagicMock()
         mock_stash.upload.return_value = UploadResult(
             key=sample_text_file.name,
+            path=f"/{sample_text_file.name}",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
         )
         mock_get_stash.return_value = mock_stash
 
-        result = upload(file_path=str(sample_text_file))
+        result = upload(file_path=str(sample_text_file), target="/")
 
         data = json.loads(result)
+        assert data["path"] == f"/{sample_text_file.name}"
         assert data["key"] == sample_text_file.name
         assert data["content_type"] == "text/plain"
 
     def test_upload_file_not_found(self) -> None:
         """Upload tool raises exception for missing file."""
         with pytest.raises(FileNotFoundError, match="not found"):
-            upload(file_path="/nonexistent/file.txt")
+            upload(file_path="/nonexistent/file.txt", target="/")
+
+    @patch("semstash.mcp_server.get_cached_stash")
+    def test_upload_to_folder(self, mock_get_stash: MagicMock, sample_text_file: Path) -> None:
+        """Upload tool uploads file to folder preserving filename."""
+        mock_stash = MagicMock()
+        mock_stash.upload.return_value = UploadResult(
+            key=f"docs/{sample_text_file.name}",
+            path=f"/docs/{sample_text_file.name}",
+            content_type="text/plain",
+            file_size=100,
+            dimension=3072,
+        )
+        mock_get_stash.return_value = mock_stash
+
+        result = upload(file_path=str(sample_text_file), target="/docs/")
+
+        data = json.loads(result)
+        assert data["path"] == f"/docs/{sample_text_file.name}"
+        assert data["key"] == f"docs/{sample_text_file.name}"
+        # Verify target was passed correctly
+        mock_stash.upload.assert_called_once()
+        call_kwargs = mock_stash.upload.call_args.kwargs
+        assert call_kwargs.get("target") == "/docs/"
 
     @patch("semstash.mcp_server.get_cached_stash")
     def test_upload_with_force(self, mock_get_stash: MagicMock, sample_text_file: Path) -> None:
@@ -84,13 +109,14 @@ class TestMCPUpload:
         mock_stash = MagicMock()
         mock_stash.upload.return_value = UploadResult(
             key=sample_text_file.name,
+            path=f"/{sample_text_file.name}",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
         )
         mock_get_stash.return_value = mock_stash
 
-        result = upload(file_path=str(sample_text_file), force=True)
+        result = upload(file_path=str(sample_text_file), target="/", force=True)
 
         data = json.loads(result)
         assert data["key"] == sample_text_file.name
@@ -110,6 +136,7 @@ class TestMCPQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="photo.jpg",
+                path="/photo.jpg",
                 score=0.95,
                 distance=0.05,
                 content_type="image/jpeg",
@@ -124,6 +151,7 @@ class TestMCPQuery:
         data = json.loads(result)
         assert data["query"] == "sunset beach"
         assert data["count"] == 1
+        assert data["results"][0]["path"] == "/photo.jpg"
         assert data["results"][0]["key"] == "photo.jpg"
 
     @patch("semstash.mcp_server.get_cached_stash")
@@ -146,6 +174,7 @@ class TestMCPQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="vacation.jpg",
+                path="/vacation.jpg",
                 score=0.90,
                 distance=0.10,
                 content_type="image/jpeg",
@@ -164,18 +193,46 @@ class TestMCPQuery:
         call_kwargs = mock_stash.query.call_args.kwargs
         assert call_kwargs.get("tags") == ["vacation", "summer"]
 
+    @patch("semstash.mcp_server.get_cached_stash")
+    def test_query_with_path_filter(self, mock_get_stash: MagicMock) -> None:
+        """Query tool filters by path prefix."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="docs/readme.txt",
+                path="/docs/readme.txt",
+                score=0.85,
+                distance=0.15,
+                content_type="text/plain",
+                file_size=512,
+                url="https://example.com/docs/readme.txt",
+            ),
+        ]
+        mock_get_stash.return_value = mock_stash
+
+        result = query(query_text="documentation", path="/docs/")
+
+        data = json.loads(result)
+        assert data["count"] == 1
+        assert data["results"][0]["path"] == "/docs/readme.txt"
+        # Verify path was passed to query
+        mock_stash.query.assert_called_once()
+        call_kwargs = mock_stash.query.call_args.kwargs
+        assert call_kwargs.get("path") == "/docs/"
+
 
 class TestMCPGet:
     """Tests for get tool."""
 
     @patch("semstash.mcp_server.get_cached_stash")
     def test_get_success(self, mock_get_stash: MagicMock) -> None:
-        """Get tool gets content."""
+        """Get tool gets content by path."""
         from datetime import datetime
 
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="photo.jpg",
+            path="/photo.jpg",
             content_type="image/jpeg",
             file_size=1024,
             created_at=datetime.now(),
@@ -183,12 +240,37 @@ class TestMCPGet:
         )
         mock_get_stash.return_value = mock_stash
 
-        result = get(key="photo.jpg")
+        result = get(path="/photo.jpg")
 
         data = json.loads(result)
+        assert data["path"] == "/photo.jpg"
         assert data["key"] == "photo.jpg"
         assert data["content_type"] == "image/jpeg"
         assert "url" in data
+        # Verify path was passed to get
+        mock_stash.get.assert_called_with("/photo.jpg")
+
+    @patch("semstash.mcp_server.get_cached_stash")
+    def test_get_nested_path(self, mock_get_stash: MagicMock) -> None:
+        """Get tool handles nested paths."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.return_value = GetResult(
+            key="docs/report.pdf",
+            path="/docs/report.pdf",
+            content_type="application/pdf",
+            file_size=2048,
+            created_at=datetime.now(),
+            url="https://example.com/docs/report.pdf",
+        )
+        mock_get_stash.return_value = mock_stash
+
+        result = get(path="/docs/report.pdf")
+
+        data = json.loads(result)
+        assert data["path"] == "/docs/report.pdf"
+        assert data["key"] == "docs/report.pdf"
 
 
 class TestMCPDelete:
@@ -196,24 +278,27 @@ class TestMCPDelete:
 
     @patch("semstash.mcp_server.get_cached_stash")
     def test_delete_success(self, mock_get_stash: MagicMock) -> None:
-        """Delete tool removes content."""
+        """Delete tool removes content by path."""
         mock_stash = MagicMock()
         mock_stash.delete.return_value = DeleteResult(key="photo.jpg", deleted=True)
         mock_get_stash.return_value = mock_stash
 
-        result = delete(key="photo.jpg")
+        result = delete(path="/photo.jpg")
 
         data = json.loads(result)
+        assert data["path"] == "/photo.jpg"
         assert data["key"] == "photo.jpg"
         assert data["deleted"] is True
+        # Verify path was passed to delete
+        mock_stash.delete.assert_called_with("/photo.jpg")
 
 
 class TestMCPBrowse:
     """Tests for browse tool."""
 
     @patch("semstash.mcp_server.get_cached_stash")
-    def test_browse_success(self, mock_get_stash: MagicMock) -> None:
-        """Browse tool lists content."""
+    def test_browse_root(self, mock_get_stash: MagicMock) -> None:
+        """Browse tool lists content at root."""
         from datetime import datetime
 
         mock_stash = MagicMock()
@@ -221,6 +306,7 @@ class TestMCPBrowse:
             items=[
                 StorageItem(
                     key="photo.jpg",
+                    path="/photo.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -230,16 +316,18 @@ class TestMCPBrowse:
         )
         mock_get_stash.return_value = mock_stash
 
-        result = browse()
+        result = browse(path="/")
 
         data = json.loads(result)
+        assert data["path"] == "/"
         assert data["total"] == 1
         assert len(data["items"]) == 1
+        assert data["items"][0]["path"] == "/photo.jpg"
         assert data["items"][0]["key"] == "photo.jpg"
 
     @patch("semstash.mcp_server.get_cached_stash")
-    def test_browse_with_prefix(self, mock_get_stash: MagicMock) -> None:
-        """Browse tool filters by prefix."""
+    def test_browse_folder(self, mock_get_stash: MagicMock) -> None:
+        """Browse tool lists content in folder."""
         from datetime import datetime
 
         mock_stash = MagicMock()
@@ -247,6 +335,7 @@ class TestMCPBrowse:
             items=[
                 StorageItem(
                     key="images/photo.jpg",
+                    path="/images/photo.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -256,11 +345,13 @@ class TestMCPBrowse:
         )
         mock_get_stash.return_value = mock_stash
 
-        result = browse(prefix="images/")
+        result = browse(path="/images/")
 
         data = json.loads(result)
+        assert data["path"] == "/images/"
         assert data["total"] == 1
-        mock_stash.browse.assert_called_with(prefix="images/", limit=20)
+        assert data["items"][0]["path"] == "/images/photo.jpg"
+        mock_stash.browse.assert_called_with(path="/images/", limit=20)
 
 
 class TestMCPStats:

@@ -89,28 +89,54 @@ class TestCliUpload:
     """Tests for upload command."""
 
     @patch("semstash.cli.SemStash")
-    def test_upload_file(self, mock_stash_class: MagicMock, sample_text_file: Path) -> None:
-        """Upload command uploads file."""
+    def test_upload_file_to_root(self, mock_stash_class: MagicMock, sample_text_file: Path) -> None:
+        """Upload command uploads file to root."""
         mock_stash = MagicMock()
 
         mock_stash.upload.return_value = UploadResult(
             key=sample_text_file.name,
+            path=f"/{sample_text_file.name}",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
         )
         mock_stash_class.return_value = mock_stash
 
-        # New syntax: semstash upload <stash> <file>
-        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file)])
+        # New syntax: semstash upload <stash> <file> <target>
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "/"])
 
         assert result.exit_code == 0
         assert sample_text_file.name in result.output
         mock_stash.upload.assert_called_once()
+        # Verify target was passed
+        call_kwargs = mock_stash.upload.call_args[1]
+        assert call_kwargs.get("target") == "/"
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_file_to_folder(
+        self, mock_stash_class: MagicMock, sample_text_file: Path
+    ) -> None:
+        """Upload command uploads file to folder."""
+        mock_stash = MagicMock()
+
+        mock_stash.upload.return_value = UploadResult(
+            key=f"docs/{sample_text_file.name}",
+            path=f"/docs/{sample_text_file.name}",
+            content_type="text/plain",
+            file_size=100,
+            dimension=3072,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "/docs/"])
+
+        assert result.exit_code == 0
+        call_kwargs = mock_stash.upload.call_args[1]
+        assert call_kwargs.get("target") == "/docs/"
 
     def test_upload_nonexistent_file(self) -> None:
         """Upload nonexistent file shows error."""
-        result = runner.invoke(app, ["upload", "test-bucket", "/nonexistent/file.txt"])
+        result = runner.invoke(app, ["upload", "test-bucket", "/nonexistent/file.txt", "/"])
 
         assert result.exit_code == 1
         assert "Error" in result.output
@@ -119,14 +145,14 @@ class TestCliUpload:
     def test_upload_existing_shows_error(
         self, mock_stash_class: MagicMock, sample_text_file: Path
     ) -> None:
-        """Upload to existing key shows error with force hint."""
+        """Upload to existing path shows error with force hint."""
         mock_stash = MagicMock()
         mock_stash.upload.side_effect = ContentExistsError(
-            "Content already exists at 'sample.txt'. Use force=True to overwrite."
+            "Content already exists at '/sample.txt'. Use force=True to overwrite."
         )
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file)])
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "/"])
 
         assert result.exit_code == 1
         assert "already exists" in result.output
@@ -138,13 +164,14 @@ class TestCliUpload:
         mock_stash = MagicMock()
         mock_result = MagicMock()
         mock_result.key = sample_text_file.name
+        mock_result.path = f"/{sample_text_file.name}"
         mock_result.content_type = "text/plain"
         mock_result.file_size = 100
         mock_result.dimension = 3072
         mock_stash.upload.return_value = mock_result
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "--force"])
+        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "/", "--force"])
 
         assert result.exit_code == 0
         mock_stash.upload.assert_called_once()
@@ -156,18 +183,20 @@ class TestCliUpload:
     def test_upload_multiple_files(
         self, mock_stash_class: MagicMock, sample_text_file: Path, sample_image_file: Path
     ) -> None:
-        """Upload command handles multiple files."""
+        """Upload command handles multiple files to folder."""
         mock_stash = MagicMock()
         # Return different results for each file
         mock_stash.upload.side_effect = [
             UploadResult(
                 key=sample_text_file.name,
+                path=f"/{sample_text_file.name}",
                 content_type="text/plain",
                 file_size=100,
                 dimension=3072,
             ),
             UploadResult(
                 key=sample_image_file.name,
+                path=f"/{sample_image_file.name}",
                 content_type="image/png",
                 file_size=200,
                 dimension=3072,
@@ -176,7 +205,7 @@ class TestCliUpload:
         mock_stash_class.return_value = mock_stash
 
         result = runner.invoke(
-            app, ["upload", "test-bucket", str(sample_text_file), str(sample_image_file)]
+            app, ["upload", "test-bucket", str(sample_text_file), str(sample_image_file), "/"]
         )
 
         assert result.exit_code == 0
@@ -194,6 +223,7 @@ class TestCliQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="photo.jpg",
+                path="/photo.jpg",
                 score=0.95,
                 distance=0.05,
                 content_type="image/jpeg",
@@ -207,7 +237,7 @@ class TestCliQuery:
         result = runner.invoke(app, ["query", "test-bucket", "sunset beach"])
 
         assert result.exit_code == 0
-        assert "photo.jpg" in result.output
+        assert "/photo.jpg" in result.output
         assert "0.95" in result.output
 
     @patch("semstash.cli.SemStash")
@@ -217,6 +247,7 @@ class TestCliQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="doc.txt",
+                path="/doc.txt",
                 score=0.85,
                 distance=0.15,
             ),
@@ -229,6 +260,7 @@ class TestCliQuery:
         data = json.loads(result.output)
         assert data["query"] == "test query"
         assert len(data["results"]) == 1
+        assert data["results"][0]["path"] == "/doc.txt"
 
     @patch("semstash.cli.SemStash")
     def test_query_with_tags(self, mock_stash_class: MagicMock) -> None:
@@ -237,6 +269,7 @@ class TestCliQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="vacation.jpg",
+                path="/vacation.jpg",
                 score=0.90,
                 distance=0.10,
                 content_type="image/jpeg",
@@ -255,18 +288,42 @@ class TestCliQuery:
         assert call_kwargs.get("tags") == ["vacation", "summer"]
 
     @patch("semstash.cli.SemStash")
+    def test_query_with_path_filter(self, mock_stash_class: MagicMock) -> None:
+        """Query command filters by path prefix."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="docs/readme.txt",
+                path="/docs/readme.txt",
+                score=0.85,
+                distance=0.15,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["query", "test-bucket", "readme", "--path", "/docs/"])
+
+        assert result.exit_code == 0
+        # Verify path was passed to query
+        mock_stash.query.assert_called_once()
+        call_kwargs = mock_stash.query.call_args.kwargs
+        assert call_kwargs.get("path") == "/docs/"
+
+    @patch("semstash.cli.SemStash")
     def test_query_urls_output(self, mock_stash_class: MagicMock) -> None:
         """Query with --urls outputs presigned URLs only."""
         mock_stash = MagicMock()
         mock_stash.query.return_value = [
             SearchResult(
                 key="photo1.jpg",
+                path="/photo1.jpg",
                 score=0.95,
                 distance=0.05,
                 url="https://bucket.s3.amazonaws.com/photo1.jpg?signed=1",
             ),
             SearchResult(
                 key="photo2.jpg",
+                path="/photo2.jpg",
                 score=0.90,
                 distance=0.10,
                 url="https://bucket.s3.amazonaws.com/photo2.jpg?signed=2",
@@ -292,6 +349,7 @@ class TestCliQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="photo.jpg",
+                path="/photo.jpg",
                 score=0.95,
                 distance=0.05,
                 url="https://bucket.s3.amazonaws.com/photo.jpg?expires=7200",
@@ -312,12 +370,13 @@ class TestCliGet:
 
     @patch("semstash.cli.SemStash")
     def test_get_success(self, mock_stash_class: MagicMock) -> None:
-        """Get command shows content info."""
+        """Get command shows content info by path."""
         from datetime import datetime
 
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="photo.jpg",
+            path="/photo.jpg",
             content_type="image/jpeg",
             file_size=2048,
             created_at=datetime.now(),
@@ -325,22 +384,47 @@ class TestCliGet:
         )
         mock_stash_class.return_value = mock_stash
 
-        # New syntax: semstash get <stash> <key>
-        result = runner.invoke(app, ["get", "test-bucket", "photo.jpg"])
+        # Syntax: semstash get <stash> <path>
+        result = runner.invoke(app, ["get", "test-bucket", "/photo.jpg"])
 
         assert result.exit_code == 0
-        assert "photo.jpg" in result.output
+        assert "/photo.jpg" in result.output
         assert "image/jpeg" in result.output
+        # Verify path was passed to get
+        mock_stash.get.assert_called_once()
+        assert mock_stash.get.call_args[0][0] == "/photo.jpg"
 
     @patch("semstash.cli.SemStash")
-    def test_get_multiple_keys(self, mock_stash_class: MagicMock) -> None:
-        """Get command accepts multiple keys."""
+    def test_get_nested_path(self, mock_stash_class: MagicMock) -> None:
+        """Get command handles nested paths."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.get.return_value = GetResult(
+            key="docs/readme.txt",
+            path="/docs/readme.txt",
+            content_type="text/plain",
+            file_size=1024,
+            created_at=datetime.now(),
+            url="https://example.com/docs/readme.txt",
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["get", "test-bucket", "/docs/readme.txt"])
+
+        assert result.exit_code == 0
+        assert "/docs/readme.txt" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_get_multiple_paths(self, mock_stash_class: MagicMock) -> None:
+        """Get command accepts multiple paths."""
         from datetime import datetime
 
         mock_stash = MagicMock()
         mock_stash.get.side_effect = [
             GetResult(
                 key="photo1.jpg",
+                path="/photo1.jpg",
                 content_type="image/jpeg",
                 file_size=1024,
                 created_at=datetime.now(),
@@ -348,6 +432,7 @@ class TestCliGet:
             ),
             GetResult(
                 key="photo2.jpg",
+                path="/photo2.jpg",
                 content_type="image/png",
                 file_size=2048,
                 created_at=datetime.now(),
@@ -356,22 +441,23 @@ class TestCliGet:
         ]
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["get", "test-bucket", "photo1.jpg", "photo2.jpg"])
+        result = runner.invoke(app, ["get", "test-bucket", "/photo1.jpg", "/photo2.jpg"])
 
         assert result.exit_code == 0
-        assert "photo1.jpg" in result.output
-        assert "photo2.jpg" in result.output
+        assert "/photo1.jpg" in result.output
+        assert "/photo2.jpg" in result.output
         assert mock_stash.get.call_count == 2
 
     @patch("semstash.cli.SemStash")
     def test_get_multiple_json_output(self, mock_stash_class: MagicMock) -> None:
-        """Get multiple keys returns array in JSON mode."""
+        """Get multiple paths returns array in JSON mode."""
         from datetime import datetime
 
         mock_stash = MagicMock()
         mock_stash.get.side_effect = [
             GetResult(
                 key="photo1.jpg",
+                path="/photo1.jpg",
                 content_type="image/jpeg",
                 file_size=1024,
                 created_at=datetime.now(),
@@ -379,6 +465,7 @@ class TestCliGet:
             ),
             GetResult(
                 key="photo2.jpg",
+                path="/photo2.jpg",
                 content_type="image/png",
                 file_size=2048,
                 created_at=datetime.now(),
@@ -388,13 +475,14 @@ class TestCliGet:
         mock_stash_class.return_value = mock_stash
 
         result = runner.invoke(
-            app, ["get", "test-bucket", "photo1.jpg", "photo2.jpg", "-o", "json"]
+            app, ["get", "test-bucket", "/photo1.jpg", "/photo2.jpg", "-o", "json"]
         )
 
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["count"] == 2
         assert len(data["items"]) == 2
+        assert data["items"][0]["path"] == "/photo1.jpg"
 
     @patch("semstash.cli.SemStash")
     def test_get_with_expiry(self, mock_stash_class: MagicMock) -> None:
@@ -404,6 +492,7 @@ class TestCliGet:
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="photo.jpg",
+            path="/photo.jpg",
             content_type="image/jpeg",
             file_size=2048,
             created_at=datetime.now(),
@@ -411,7 +500,7 @@ class TestCliGet:
         )
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["get", "test-bucket", "photo.jpg", "--expiry", "7200"])
+        result = runner.invoke(app, ["get", "test-bucket", "/photo.jpg", "--expiry", "7200"])
 
         assert result.exit_code == 0
         mock_stash.get.assert_called_once()
@@ -429,22 +518,38 @@ class TestCliDelete:
         mock_stash.delete.return_value = DeleteResult(key="photo.jpg", deleted=True)
         mock_stash_class.return_value = mock_stash
 
-        # New syntax: semstash delete <stash> <key> --yes
-        result = runner.invoke(app, ["delete", "test-bucket", "photo.jpg", "--yes"])
+        # Syntax: semstash delete <stash> <path> --yes
+        result = runner.invoke(app, ["delete", "test-bucket", "/photo.jpg", "--yes"])
 
         assert result.exit_code == 0
         assert "Deleted" in result.output
+        # Verify path was passed to delete
+        mock_stash.delete.assert_called_once()
+        assert mock_stash.delete.call_args[0][0] == "/photo.jpg"
+
+    @patch("semstash.cli.SemStash")
+    def test_delete_nested_path(self, mock_stash_class: MagicMock) -> None:
+        """Delete command handles nested paths."""
+        mock_stash = MagicMock()
+        mock_stash.delete.return_value = DeleteResult(key="docs/readme.txt", deleted=True)
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["delete", "test-bucket", "/docs/readme.txt", "--yes"])
+
+        assert result.exit_code == 0
+        mock_stash.delete.assert_called_once()
+        assert mock_stash.delete.call_args[0][0] == "/docs/readme.txt"
 
     @patch("semstash.cli.SemStash")
     def test_delete_abort(self, mock_stash_class: MagicMock) -> None:
         """Delete command can be aborted."""
-        result = runner.invoke(app, ["delete", "test-bucket", "photo.jpg"], input="n\n")
+        result = runner.invoke(app, ["delete", "test-bucket", "/photo.jpg"], input="n\n")
 
         assert result.exit_code == 1
 
     @patch("semstash.cli.SemStash")
-    def test_delete_multiple_keys(self, mock_stash_class: MagicMock) -> None:
-        """Delete command accepts multiple keys."""
+    def test_delete_multiple_paths(self, mock_stash_class: MagicMock) -> None:
+        """Delete command accepts multiple paths."""
         mock_stash = MagicMock()
         mock_stash.delete.side_effect = [
             DeleteResult(key="photo1.jpg", deleted=True),
@@ -452,16 +557,18 @@ class TestCliDelete:
         ]
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["delete", "test-bucket", "photo1.jpg", "photo2.jpg", "--yes"])
+        result = runner.invoke(
+            app, ["delete", "test-bucket", "/photo1.jpg", "/photo2.jpg", "--yes"]
+        )
 
         assert result.exit_code == 0
-        assert "photo1.jpg" in result.output
-        assert "photo2.jpg" in result.output
+        assert "/photo1.jpg" in result.output
+        assert "/photo2.jpg" in result.output
         assert mock_stash.delete.call_count == 2
 
     @patch("semstash.cli.SemStash")
     def test_delete_multiple_json_output(self, mock_stash_class: MagicMock) -> None:
-        """Delete multiple keys returns array in JSON mode."""
+        """Delete multiple paths returns array in JSON mode."""
         mock_stash = MagicMock()
         mock_stash.delete.side_effect = [
             DeleteResult(key="photo1.jpg", deleted=True),
@@ -471,7 +578,7 @@ class TestCliDelete:
 
         result = runner.invoke(
             app,
-            ["delete", "test-bucket", "photo1.jpg", "photo2.jpg", "--yes", "-o", "json"],
+            ["delete", "test-bucket", "/photo1.jpg", "/photo2.jpg", "--yes", "-o", "json"],
         )
 
         assert result.exit_code == 0
@@ -485,20 +592,24 @@ class TestCliBrowse:
 
     @patch("semstash.cli.SemStash")
     def test_browse_empty(self, mock_stash_class: MagicMock) -> None:
-        """Browse with no content."""
+        """Browse with no content at root."""
         mock_stash = MagicMock()
         mock_stash.browse.return_value = BrowseResult(items=[], total=0)
         mock_stash_class.return_value = mock_stash
 
-        # New syntax: semstash browse <stash>
-        result = runner.invoke(app, ["browse", "test-bucket"])
+        # New syntax: semstash browse <stash> <path>
+        result = runner.invoke(app, ["browse", "test-bucket", "/"])
 
         assert result.exit_code == 0
         assert "No content found" in result.output
+        # Verify path was passed
+        mock_stash.browse.assert_called_once()
+        call_kwargs = mock_stash.browse.call_args.kwargs
+        assert call_kwargs.get("path") == "/"
 
     @patch("semstash.cli.SemStash")
     def test_browse_with_content(self, mock_stash_class: MagicMock) -> None:
-        """Browse with content items."""
+        """Browse with content items at root."""
         from datetime import datetime
 
         mock_stash = MagicMock()
@@ -506,6 +617,7 @@ class TestCliBrowse:
             items=[
                 StorageItem(
                     key="photo.jpg",
+                    path="/photo.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -515,10 +627,40 @@ class TestCliBrowse:
         )
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["browse", "test-bucket"])
+        result = runner.invoke(app, ["browse", "test-bucket", "/"])
 
         assert result.exit_code == 0
         assert "photo.jpg" in result.output
+        assert "/photo.jpg" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_browse_folder(self, mock_stash_class: MagicMock) -> None:
+        """Browse content in a folder."""
+        from datetime import datetime
+
+        mock_stash = MagicMock()
+        mock_stash.browse.return_value = BrowseResult(
+            items=[
+                StorageItem(
+                    key="docs/readme.txt",
+                    path="/docs/readme.txt",
+                    content_type="text/plain",
+                    file_size=512,
+                    created_at=datetime.now(),
+                ),
+            ],
+            total=1,
+        )
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["browse", "test-bucket", "/docs/"])
+
+        assert result.exit_code == 0
+        assert "/docs/readme.txt" in result.output
+        # Verify path was passed
+        mock_stash.browse.assert_called_once()
+        call_kwargs = mock_stash.browse.call_args.kwargs
+        assert call_kwargs.get("path") == "/docs/"
 
 
 class TestCliStats:

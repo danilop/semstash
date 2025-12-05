@@ -9,20 +9,27 @@ Example:
     # Create client with bucket name
     stash = SemStash("my-bucket")
 
-    # Upload content
-    result = stash.upload("photo.jpg")
-    print(f"Stored as: {result.key}")
+    # Upload content (target path is required)
+    result = stash.upload("photo.jpg", target="/")  # Upload to root
+    print(f"Stored at: {result.path}")  # /photo.jpg
+
+    result = stash.upload("notes.txt", target="/docs/")  # Upload to folder
+    print(f"Stored at: {result.path}")  # /docs/notes.txt
 
     # Query semantically
     for item in stash.query("sunset on beach", top_k=5):
-        print(f"{item.score:.2f} - {item.key}")
+        print(f"{item.score:.2f} - {item.path}")
 
-    # Get content metadata
-    content = stash.get("photo.jpg")
+    # Query with path filter
+    for item in stash.query("meeting notes", path="/docs/"):
+        print(f"{item.path}: {item.score:.2f}")
+
+    # Get content metadata by path
+    content = stash.get("/photo.jpg")
     print(f"URL: {content.url}")
 
-    # Download content
-    stash.download("photo.jpg", "./local-photo.jpg")
+    # Download content by path
+    stash.download("/photo.jpg", "./local-photo.jpg")
 """
 
 __version__ = "0.1.0"

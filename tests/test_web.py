@@ -66,12 +66,13 @@ class TestWebUpload:
     """Tests for upload endpoint."""
 
     @patch("semstash.web.get_stash")
-    def test_upload_file(self, mock_get_stash: MagicMock) -> None:
-        """Upload endpoint uploads file."""
+    def test_upload_file_to_root(self, mock_get_stash: MagicMock) -> None:
+        """Upload endpoint uploads file to root."""
         mock_stash = MagicMock()
 
         mock_stash.upload.return_value = UploadResult(
             key="test.txt",
+            path="/test.txt",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
@@ -81,12 +82,47 @@ class TestWebUpload:
         response = client.post(
             "/upload",
             files={"file": ("test.txt", b"test content", "text/plain")},
+            data={"target": "/"},
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert data["key"] == "test.txt"
+        assert data["path"] == "/test.txt"
+        # Verify target was passed
+        mock_stash.upload.assert_called_once()
+        call_kwargs = mock_stash.upload.call_args.kwargs
+        assert call_kwargs.get("target") == "/"
+
+    @patch("semstash.web.get_stash")
+    def test_upload_file_to_folder(self, mock_get_stash: MagicMock) -> None:
+        """Upload endpoint uploads file to folder preserving filename."""
+        mock_stash = MagicMock()
+
+        mock_stash.upload.return_value = UploadResult(
+            key="docs/test.txt",
+            path="/docs/test.txt",
+            content_type="text/plain",
+            file_size=100,
+            dimension=3072,
+        )
+        mock_get_stash.return_value = mock_stash
+
+        response = client.post(
+            "/upload",
+            files={"file": ("test.txt", b"test content", "text/plain")},
+            data={"target": "/docs/"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["path"] == "/docs/test.txt"
+        # Verify target was passed
+        mock_stash.upload.assert_called_once()
+        call_kwargs = mock_stash.upload.call_args.kwargs
+        assert call_kwargs.get("target") == "/docs/"
 
     @patch("semstash.web.get_stash")
     def test_upload_with_tags(self, mock_get_stash: MagicMock) -> None:
@@ -95,6 +131,7 @@ class TestWebUpload:
 
         mock_stash.upload.return_value = UploadResult(
             key="test.txt",
+            path="/test.txt",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
@@ -104,23 +141,24 @@ class TestWebUpload:
         response = client.post(
             "/upload",
             files={"file": ("test.txt", b"content", "text/plain")},
-            data={"tags": "tag1,tag2"},
+            data={"target": "/", "tags": "tag1,tag2"},
         )
 
         assert response.status_code == 200
 
     @patch("semstash.web.get_stash")
     def test_upload_existing_returns_409(self, mock_get_stash: MagicMock) -> None:
-        """Upload to existing key returns 409 conflict."""
+        """Upload to existing path returns 409 conflict."""
         mock_stash = MagicMock()
         mock_stash.upload.side_effect = ContentExistsError(
-            "Content already exists at 'test.txt'. Use force=True to overwrite."
+            "Content already exists at '/test.txt'. Use force=True to overwrite."
         )
         mock_get_stash.return_value = mock_stash
 
         response = client.post(
             "/upload",
             files={"file": ("test.txt", b"test content", "text/plain")},
+            data={"target": "/"},
         )
 
         assert response.status_code == 409
@@ -135,6 +173,7 @@ class TestWebUpload:
 
         mock_stash.upload.return_value = UploadResult(
             key="test.txt",
+            path="/test.txt",
             content_type="text/plain",
             file_size=100,
             dimension=3072,
@@ -144,7 +183,7 @@ class TestWebUpload:
         response = client.post(
             "/upload",
             files={"file": ("test.txt", b"test content", "text/plain")},
-            data={"force": "true"},
+            data={"target": "/", "force": "true"},
         )
 
         assert response.status_code == 200
@@ -164,6 +203,7 @@ class TestWebQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="photo.jpg",
+                path="/photo.jpg",
                 score=0.95,
                 distance=0.05,
                 content_type="image/jpeg",
@@ -180,6 +220,7 @@ class TestWebQuery:
         assert data["success"] is True
         assert data["count"] == 1
         assert data["results"][0]["key"] == "photo.jpg"
+        assert data["results"][0]["path"] == "/photo.jpg"
 
     @patch("semstash.web.get_stash")
     def test_query_with_filters(self, mock_get_stash: MagicMock) -> None:
@@ -199,6 +240,7 @@ class TestWebQuery:
         mock_stash.query.return_value = [
             SearchResult(
                 key="vacation.jpg",
+                path="/vacation.jpg",
                 score=0.90,
                 distance=0.10,
                 content_type="image/jpeg",
@@ -218,6 +260,34 @@ class TestWebQuery:
         call_kwargs = mock_stash.query.call_args.kwargs
         assert call_kwargs.get("tags") == ["vacation", "summer"]
 
+    @patch("semstash.web.get_stash")
+    def test_query_with_path_filter(self, mock_get_stash: MagicMock) -> None:
+        """Query endpoint filters by path prefix."""
+        mock_stash = MagicMock()
+        mock_stash.query.return_value = [
+            SearchResult(
+                key="docs/readme.txt",
+                path="/docs/readme.txt",
+                score=0.85,
+                distance=0.15,
+                content_type="text/plain",
+                file_size=512,
+                url="https://example.com/docs/readme.txt",
+            ),
+        ]
+        mock_get_stash.return_value = mock_stash
+
+        response = client.get("/query?q=readme&path=/docs/")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["results"][0]["path"] == "/docs/readme.txt"
+        # Verify path was passed to query
+        mock_stash.query.assert_called_once()
+        call_kwargs = mock_stash.query.call_args.kwargs
+        assert call_kwargs.get("path") == "/docs/"
+
 
 class TestWebGet:
     """Tests for get endpoint."""
@@ -228,6 +298,7 @@ class TestWebGet:
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="photo.jpg",
+            path="/photo.jpg",
             content_type="image/jpeg",
             file_size=1024,
             created_at=datetime.now(),
@@ -241,6 +312,11 @@ class TestWebGet:
         data = response.json()
         assert data["success"] is True
         assert data["key"] == "photo.jpg"
+        assert data["path"] == "/photo.jpg"
+        # Verify path was passed to get
+        mock_stash.get.assert_called_once()
+        call_args = mock_stash.get.call_args[0]
+        assert call_args[0] == "/photo.jpg"
 
     @patch("semstash.web.get_stash")
     def test_get_nested_path(self, mock_get_stash: MagicMock) -> None:
@@ -248,6 +324,7 @@ class TestWebGet:
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="docs/report.pdf",
+            path="/docs/report.pdf",
             content_type="application/pdf",
             file_size=2048,
             created_at=datetime.now(),
@@ -260,6 +337,11 @@ class TestWebGet:
         assert response.status_code == 200
         data = response.json()
         assert data["key"] == "docs/report.pdf"
+        assert data["path"] == "/docs/report.pdf"
+        # Verify path was passed to get
+        mock_stash.get.assert_called_once()
+        call_args = mock_stash.get.call_args[0]
+        assert call_args[0] == "/docs/report.pdf"
 
 
 class TestWebDelete:
@@ -267,7 +349,7 @@ class TestWebDelete:
 
     @patch("semstash.web.get_stash")
     def test_delete_success(self, mock_get_stash: MagicMock) -> None:
-        """Delete endpoint removes content."""
+        """Delete endpoint removes content by path."""
         mock_stash = MagicMock()
         mock_stash.delete.return_value = DeleteResult(key="photo.jpg", deleted=True)
         mock_get_stash.return_value = mock_stash
@@ -278,6 +360,27 @@ class TestWebDelete:
         data = response.json()
         assert data["success"] is True
         assert data["deleted"] is True
+        # Verify path was passed to delete
+        mock_stash.delete.assert_called_once()
+        call_args = mock_stash.delete.call_args[0]
+        assert call_args[0] == "/photo.jpg"
+
+    @patch("semstash.web.get_stash")
+    def test_delete_nested_path(self, mock_get_stash: MagicMock) -> None:
+        """Delete endpoint handles nested paths."""
+        mock_stash = MagicMock()
+        mock_stash.delete.return_value = DeleteResult(key="docs/readme.txt", deleted=True)
+        mock_get_stash.return_value = mock_stash
+
+        response = client.delete("/content/docs/readme.txt")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted"] is True
+        # Verify path was passed to delete
+        mock_stash.delete.assert_called_once()
+        call_args = mock_stash.delete.call_args[0]
+        assert call_args[0] == "/docs/readme.txt"
 
 
 class TestWebBrowse:
@@ -285,26 +388,31 @@ class TestWebBrowse:
 
     @patch("semstash.web.get_stash")
     def test_browse_empty(self, mock_get_stash: MagicMock) -> None:
-        """Browse endpoint returns empty list."""
+        """Browse endpoint returns empty list at root."""
         mock_stash = MagicMock()
         mock_stash.browse.return_value = BrowseResult(items=[], total=0)
         mock_get_stash.return_value = mock_stash
 
-        response = client.get("/browse")
+        response = client.get("/browse/")
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert data["total"] == 0
+        # Verify path was passed
+        mock_stash.browse.assert_called_once()
+        call_kwargs = mock_stash.browse.call_args.kwargs
+        assert call_kwargs.get("path") == "/"
 
     @patch("semstash.web.get_stash")
     def test_browse_with_content(self, mock_get_stash: MagicMock) -> None:
-        """Browse endpoint returns content."""
+        """Browse endpoint returns content at root."""
         mock_stash = MagicMock()
         mock_stash.browse.return_value = BrowseResult(
             items=[
                 StorageItem(
                     key="photo.jpg",
+                    path="/photo.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -314,12 +422,42 @@ class TestWebBrowse:
         )
         mock_get_stash.return_value = mock_stash
 
-        response = client.get("/browse")
+        response = client.get("/browse/")
 
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
         assert len(data["items"]) == 1
+        assert data["items"][0]["path"] == "/photo.jpg"
+
+    @patch("semstash.web.get_stash")
+    def test_browse_folder(self, mock_get_stash: MagicMock) -> None:
+        """Browse endpoint handles folder paths."""
+        mock_stash = MagicMock()
+        mock_stash.browse.return_value = BrowseResult(
+            items=[
+                StorageItem(
+                    key="docs/readme.txt",
+                    path="/docs/readme.txt",
+                    content_type="text/plain",
+                    file_size=512,
+                    created_at=datetime.now(),
+                ),
+            ],
+            total=1,
+        )
+        mock_get_stash.return_value = mock_stash
+
+        response = client.get("/browse/docs/")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["items"][0]["path"] == "/docs/readme.txt"
+        # Verify path was passed
+        mock_stash.browse.assert_called_once()
+        call_kwargs = mock_stash.browse.call_args.kwargs
+        assert call_kwargs.get("path") == "/docs/"
 
     @patch("semstash.web.get_stash")
     def test_browse_with_pagination(self, mock_get_stash: MagicMock) -> None:
@@ -329,6 +467,7 @@ class TestWebBrowse:
             items=[
                 StorageItem(
                     key="photo1.jpg",
+                    path="/photo1.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -339,7 +478,7 @@ class TestWebBrowse:
         )
         mock_get_stash.return_value = mock_stash
 
-        response = client.get("/browse?limit=1")
+        response = client.get("/browse/?limit=1")
 
         assert response.status_code == 200
         data = response.json()
@@ -354,6 +493,7 @@ class TestWebBrowse:
             items=[
                 StorageItem(
                     key="photo2.jpg",
+                    path="/photo2.jpg",
                     content_type="image/jpeg",
                     file_size=2048,
                     created_at=datetime.now(),
@@ -364,7 +504,7 @@ class TestWebBrowse:
         )
         mock_get_stash.return_value = mock_stash
 
-        response = client.get("/browse?next_token=token123")
+        response = client.get("/browse/?next_token=token123")
 
         assert response.status_code == 200
         data = response.json()
@@ -581,6 +721,7 @@ class TestWebUI:
             items=[
                 StorageItem(
                     key="photo.jpg",
+                    path="/photo.jpg",
                     content_type="image/jpeg",
                     file_size=1024,
                     created_at=datetime.now(),
@@ -616,7 +757,7 @@ class TestWebUI:
         mock_stash.browse.return_value = BrowseResult(items=[], total=0)
         mock_get_stash.return_value = mock_stash
 
-        response = client.get("/ui/browse?prefix=photos&content_type=image")
+        response = client.get("/ui/browse?path=/photos/&content_type=image")
 
         assert response.status_code == 200
         mock_stash.browse.assert_called_once()
@@ -636,6 +777,7 @@ class TestWebUI:
         mock_stash.query.return_value = [
             SearchResult(
                 key="beach.jpg",
+                path="/beach.jpg",
                 score=0.95,
                 distance=0.05,
                 content_type="image/jpeg",
@@ -669,6 +811,7 @@ class TestWebUI:
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="photo.jpg",
+            path="/photo.jpg",
             content_type="image/jpeg",
             file_size=1024,
             created_at=datetime.now(),
@@ -692,6 +835,7 @@ class TestWebUI:
         mock_stash = MagicMock()
         mock_stash.get.return_value = GetResult(
             key="docs/report.pdf",
+            path="/docs/report.pdf",
             content_type="application/pdf",
             file_size=2048,
             created_at=datetime.now(),

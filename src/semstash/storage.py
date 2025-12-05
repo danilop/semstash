@@ -29,6 +29,7 @@ from semstash.exceptions import (
     StorageError,
 )
 from semstash.models import SearchResult, StashConfig, StorageItem
+from semstash.utils import key_to_path
 
 # Stash config file path in S3 bucket
 STASH_CONFIG_KEY = ".semstash/config.json"
@@ -191,6 +192,7 @@ class ContentStorage:
             file_size = file_path.stat().st_size
             return StorageItem(
                 key=key,
+                path=key_to_path(key),
                 content_type=content_type,
                 file_size=file_size,
                 created_at=datetime.now(),
@@ -280,6 +282,7 @@ class ContentStorage:
             response = self.client.head_object(Bucket=self.bucket, Key=key)
             return StorageItem(
                 key=key,
+                path=key_to_path(key),
                 content_type=response.get("ContentType", "application/octet-stream"),
                 file_size=response.get("ContentLength", 0),
                 created_at=response.get("LastModified", datetime.now()),
@@ -330,6 +333,7 @@ class ContentStorage:
                 items.append(
                     StorageItem(
                         key=key,
+                        path=key_to_path(key),
                         content_type="",  # Not available in list response
                         file_size=obj["Size"],
                         created_at=obj["LastModified"],
@@ -797,7 +801,7 @@ class VectorStorage:
         """Get index statistics.
 
         Returns:
-            Dictionary with index stats.
+            Dictionary with index stats including vector count.
 
         Raises:
             StorageError: If stats retrieval fails.
@@ -809,9 +813,13 @@ class VectorStorage:
             )
             # Index details are nested under 'index' key
             index_info = response.get("index", {})
+
+            # Count vectors by listing them (API doesn't provide count metadata)
+            vector_count = len(self.list_all_keys()) if self._initialized else 0
+
             return {
                 "dimension": index_info.get("dimension", self.dimension),
-                "vector_count": index_info.get("vectorCount", 0),
+                "vector_count": vector_count,
                 "distance_metric": index_info.get("distanceMetric", "cosine"),
             }
         except ClientError as e:

@@ -7,7 +7,7 @@
 <div class="card">
     <form id="upload-form" action="/upload" method="POST" enctype="multipart/form-data">
         <div class="dropzone" id="dropzone">
-            <div class="icon">📁</div>
+            <div class="icon">&#128193;</div>
             <p class="mb-1"><strong>Drag and drop files here</strong></p>
             <p class="text-muted mb-2">or click to select files</p>
             <input type="file" id="file-input" name="file" style="display: none;" multiple>
@@ -22,6 +22,12 @@
         </div>
 
         <div class="form-group mt-2">
+            <label for="target">Upload to Path</label>
+            <input type="text" class="form-control" id="target" name="target" value="{{ target or '/' }}" placeholder="e.g., / or /docs/">
+            <small class="text-muted">End with / to keep original filename, or specify full path to rename</small>
+        </div>
+
+        <div class="form-group">
             <label for="tags">Tags (comma-separated)</label>
             <input type="text" class="form-control" id="tags" name="tags" placeholder="e.g., photos, vacation, 2024">
         </div>
@@ -52,6 +58,7 @@ const filesContainer = document.getElementById('files-container');
 const uploadBtn = document.getElementById('upload-btn');
 const uploadForm = document.getElementById('upload-form');
 const resultsDiv = document.getElementById('upload-results');
+const targetInput = document.getElementById('target');
 
 // Drag and drop handlers
 dropzone.addEventListener('dragover', (e) => {
@@ -90,7 +97,7 @@ function updateFileList() {
                 <div class="file-icon">${getFileIcon(file.type)}</div>
                 <div>
                     <div class="key">${file.name}</div>
-                    <div class="meta">${formatSize(file.size)} • ${file.type || 'Unknown type'}</div>
+                    <div class="meta">${formatSize(file.size)} - ${file.type || 'Unknown type'}</div>
                 </div>
             `;
             filesContainer.appendChild(div);
@@ -103,15 +110,15 @@ function updateFileList() {
 }
 
 function getFileIcon(type) {
-    if (type.startsWith('image/')) return '🖼️';
-    if (type.startsWith('video/')) return '🎬';
-    if (type.startsWith('audio/')) return '🎵';
-    if (type === 'application/pdf') return '📄';
-    if (type.includes('spreadsheet') || type.includes('excel')) return '📊';
-    if (type.includes('presentation') || type.includes('powerpoint')) return '📽️';
-    if (type.includes('document') || type.includes('word')) return '📝';
-    if (type.startsWith('text/')) return '📃';
-    return '📁';
+    if (type.startsWith('image/')) return '&#128444;';
+    if (type.startsWith('video/')) return '&#127916;';
+    if (type.startsWith('audio/')) return '&#127925;';
+    if (type === 'application/pdf') return '&#128196;';
+    if (type.includes('spreadsheet') || type.includes('excel')) return '&#128202;';
+    if (type.includes('presentation') || type.includes('powerpoint')) return '&#127902;';
+    if (type.includes('document') || type.includes('word')) return '&#128221;';
+    if (type.startsWith('text/')) return '&#128195;';
+    return '&#128193;';
 }
 
 function formatSize(bytes) {
@@ -130,6 +137,7 @@ uploadForm.addEventListener('submit', async (e) => {
 
     const files = fileInput.files;
     const tags = document.getElementById('tags').value;
+    const target = targetInput.value || '/';
     const force = document.querySelector('input[name="force"]').checked;
     let successCount = 0;
     let errorCount = 0;
@@ -137,6 +145,7 @@ uploadForm.addEventListener('submit', async (e) => {
     for (const file of files) {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('target', target);
         if (tags) formData.append('tags', tags);
         if (force) formData.append('force', 'true');
 
@@ -152,14 +161,14 @@ uploadForm.addEventListener('submit', async (e) => {
                 successCount++;
                 resultsDiv.innerHTML += `
                     <div class="alert alert-success">
-                        <strong>✓ Uploaded:</strong> ${data.key} (${data.content_type})
+                        <strong>&#10003; Uploaded:</strong> <a href="/ui/content${data.path}">${data.path}</a> (${data.content_type})
                     </div>
                 `;
             } else {
                 errorCount++;
                 resultsDiv.innerHTML += `
                     <div class="alert alert-error">
-                        <strong>✗ Failed:</strong> ${file.name} - ${data.detail || 'Unknown error'}
+                        <strong>&#10007; Failed:</strong> ${file.name} - ${data.detail || 'Unknown error'}
                     </div>
                 `;
             }
@@ -167,7 +176,7 @@ uploadForm.addEventListener('submit', async (e) => {
             errorCount++;
             resultsDiv.innerHTML += `
                 <div class="alert alert-error">
-                    <strong>✗ Error:</strong> ${file.name} - ${err.message}
+                    <strong>&#10007; Error:</strong> ${file.name} - ${err.message}
                 </div>
             `;
         }

@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from semstash.client import SemStash, create_stash_from_env
+from semstash.client import SemStash
 from semstash.config import (
     DEFAULT_BROWSE_LIMIT,
     DEFAULT_DIMENSION,
@@ -38,7 +38,17 @@ from semstash.exceptions import (
     StorageError,
     UnsupportedContentTypeError,
 )
-from semstash.utils import format_size
+from semstash.models import StorageItem
+from semstash.utils import (
+    format_size,
+    generate_breadcrumbs,
+    get_cached_stash,
+    get_containing_folder,
+    get_filename,
+    get_parent_path,
+    key_to_path,
+    normalize_path,
+)
 
 # Template directory (relative to this file)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -67,15 +77,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global stash instance (cached for performance)
+# Global stash instance (can be set by /init or /open endpoints)
 _stash: SemStash | None = None
 
 
 def get_stash() -> SemStash:
-    """Get or create the SemStash instance from environment variables."""
+    """Get the SemStash instance.
+
+    Uses either the explicitly initialized stash (via /init or /open) or
+    falls back to creating one from environment variables.
+    """
     global _stash
     if _stash is None:
-        _stash = create_stash_from_env()
+        _stash = get_cached_stash()
     return _stash
 
 
@@ -107,6 +121,7 @@ class InitResponse(SuccessResponse):
 class UploadResponse(SuccessResponse):
     """Upload endpoint response."""
 
+    path: str
     key: str
     content_type: str
     file_size: int
@@ -116,6 +131,7 @@ class UploadResponse(SuccessResponse):
 class QueryResultItem(BaseModel):
     """Single query result."""
 
+    path: str
     key: str
     score: float
     content_type: str | None
@@ -134,6 +150,7 @@ class QueryResponse(SuccessResponse):
 class GetResponse(SuccessResponse):
     """Get endpoint response."""
 
+    path: str
     key: str
     content_type: str
     file_size: int
@@ -144,6 +161,7 @@ class GetResponse(SuccessResponse):
 class DeleteResponse(SuccessResponse):
     """Delete endpoint response."""
 
+    path: str
     key: str
     deleted: bool
 
@@ -151,6 +169,7 @@ class DeleteResponse(SuccessResponse):
 class BrowseItem(BaseModel):
     """Browse result item."""
 
+    path: str
     key: str
     content_type: str
     file_size: int
@@ -160,6 +179,7 @@ class BrowseItem(BaseModel):
 class BrowseResponse(SuccessResponse):
     """Browse endpoint response."""
 
+    path: str
     total: int
     next_token: str | None = None
     items: list[BrowseItem]
@@ -297,7 +317,9 @@ async def open_stash(
 @app.post("/upload", response_model=UploadResponse)
 async def upload(
     file: Annotated[UploadFile, File(...)],
-    key: Annotated[str | None, Form()] = None,
+    target: Annotated[
+        str, Form(..., description="Target: '/' root, '/folder/' keeps name, else renames")
+    ],
     tags: Annotated[str | None, Form()] = None,
     force: Annotated[bool, Form()] = False,
 ) -> UploadResponse:
@@ -305,9 +327,9 @@ async def upload(
 
     Args:
         file: The file to upload.
-        key: Optional key for the file. Defaults to the filename.
+        target: Target path. '/' for root, '/folder/' preserves filename, '/path/name.ext' renames.
         tags: Optional comma-separated tags.
-        force: If True, overwrite existing content with the same key.
+        force: If True, overwrite existing content.
     """
     try:
         stash = get_stash()
@@ -325,12 +347,13 @@ async def upload(
 
             result = stash.upload(
                 file_path=tmp_path,
-                key=key or file.filename,
+                target=target,
                 tags=tag_list,
                 force=force,
             )
 
             return UploadResponse(
+                path=result.path,
                 key=result.key,
                 content_type=result.content_type,
                 file_size=result.file_size,
@@ -361,6 +384,7 @@ async def query(
     top_k: int = Query(DEFAULT_SEARCH_TOP_K, ge=1, le=100, description="Max results"),
     content_type: str | None = Query(None, description="Filter by content type"),
     tag: list[str] | None = Query(None, description="Filter by tags (any match)"),
+    path: str | None = Query(None, description="Filter by path prefix (e.g., /docs/)"),
 ) -> QueryResponse:
     """Query for content using natural language."""
     try:
@@ -370,6 +394,7 @@ async def query(
             top_k=top_k,
             content_type=content_type,
             tags=tag,
+            path=path,
         )
 
         return QueryResponse(
@@ -377,6 +402,7 @@ async def query(
             count=len(results),
             results=[
                 QueryResultItem(
+                    path=r.path,
                     key=r.key,
                     score=r.score,
                     content_type=r.content_type,
@@ -395,14 +421,20 @@ async def query(
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
-@app.get("/content/{key:path}", response_model=GetResponse)
-async def get_content(key: str) -> GetResponse:
-    """Get content metadata and download URL."""
+@app.get("/content/{path:path}", response_model=GetResponse)
+async def get_content(path: str) -> GetResponse:
+    """Get content metadata and download URL.
+
+    Path should include leading slash (e.g., /images/photo.jpg).
+    """
+    path = normalize_path(path)
+
     try:
         stash = get_stash()
-        result = stash.get(key)
+        result = stash.get(path)
 
         return GetResponse(
+            path=result.path,
             key=result.key,
             content_type=result.content_type,
             file_size=result.file_size,
@@ -410,7 +442,7 @@ async def get_content(key: str) -> GetResponse:
             url=result.url,
         )
     except ContentNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Content not found: {key}") from None
+        raise HTTPException(status_code=404, detail=f"Content not found: {path}") from None
     except NotInitializedError:
         raise HTTPException(
             status_code=400,
@@ -420,14 +452,20 @@ async def get_content(key: str) -> GetResponse:
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
-@app.delete("/content/{key:path}", response_model=DeleteResponse)
-async def delete(key: str) -> DeleteResponse:
-    """Delete content from storage."""
+@app.delete("/content/{path:path}", response_model=DeleteResponse)
+async def delete_content(path: str) -> DeleteResponse:
+    """Delete content from storage.
+
+    Path should include leading slash (e.g., /images/photo.jpg).
+    """
+    path = normalize_path(path)
+
     try:
         stash = get_stash()
-        result = stash.delete(key)
+        result = stash.delete(path)
 
         return DeleteResponse(
+            path=path,
             key=result.key,
             deleted=result.deleted,
         )
@@ -440,28 +478,35 @@ async def delete(key: str) -> DeleteResponse:
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
-@app.get("/browse", response_model=BrowseResponse)
+@app.get("/browse/{path:path}", response_model=BrowseResponse)
 async def browse(
-    prefix: str = Query("", description="Key prefix filter"),
+    path: str,
     content_type: str | None = Query(None, description="Content type filter"),
     limit: int = Query(DEFAULT_BROWSE_LIMIT, ge=1, le=100, description="Max results"),
     next_token: str | None = Query(None, description="Pagination token"),
 ) -> BrowseResponse:
-    """Browse stored content."""
+    """Browse stored content at a path.
+
+    Path should be '/' for root or '/folder/' for a subfolder.
+    """
+    path = normalize_path(path)
+
     try:
         stash = get_stash()
         result = stash.browse(
-            prefix=prefix,
+            path=path,
             content_type=content_type,
             limit=limit,
             continuation_token=next_token,
         )
 
         return BrowseResponse(
+            path=path,
             total=result.total,
             next_token=result.next_token,
             items=[
                 BrowseItem(
+                    path=item.path,
                     key=item.key,
                     content_type=item.content_type,
                     file_size=item.file_size,
@@ -589,6 +634,90 @@ async def destroy(
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
+# --- Web UI Helpers ---
+
+
+class UIBrowseItem:
+    """Item in browse view - either a folder or file."""
+
+    def __init__(
+        self,
+        name: str,
+        full_path: str,
+        is_folder: bool,
+        content_type: str | None = None,
+        file_size: int | None = None,
+        created_at: str | None = None,
+    ):
+        self.name = name
+        self.full_path = full_path
+        self.is_folder = is_folder
+        self.content_type = content_type
+        self.file_size = file_size
+        self.created_at = created_at
+
+
+def extract_folders_and_files(path: str, items: list[StorageItem]) -> list[UIBrowseItem]:
+    """Extract virtual folders and files at the given path level.
+
+    Args:
+        path: Current browsing path (e.g., '/', '/docs/')
+        items: List of storage items from browse result
+
+    Returns:
+        List of UIBrowseItem with folders first, then files, sorted alphabetically.
+    """
+    # Handle root and ensure path ends with /
+    if path == "/":
+        prefix = ""
+    else:
+        prefix = path.lstrip("/")
+        if not prefix.endswith("/"):
+            prefix = prefix + "/"
+
+    prefix_len = len(prefix)
+    seen_folders: set[str] = set()
+    result: list[UIBrowseItem] = []
+
+    for item in items:
+        # Get the part after our prefix
+        if prefix and not item.key.startswith(prefix):
+            continue
+
+        relative = item.key[prefix_len:]  # 'subdir/file.txt' or 'file.txt'
+
+        if "/" in relative:
+            # This is in a subfolder - extract folder name
+            folder_name = relative.split("/")[0]
+            if folder_name not in seen_folders:
+                seen_folders.add(folder_name)
+                folder_path = f"{path.rstrip('/')}/{folder_name}/" if path != "/" else f"/{folder_name}/"
+                result.append(
+                    UIBrowseItem(
+                        name=folder_name,
+                        full_path=folder_path,
+                        is_folder=True,
+                    )
+                )
+        else:
+            # Direct child file
+            file_path = key_to_path(item.key)
+            result.append(
+                UIBrowseItem(
+                    name=relative,
+                    full_path=file_path,
+                    is_folder=False,
+                    content_type=item.content_type,
+                    file_size=item.file_size,
+                    created_at=item.created_at.strftime("%Y-%m-%d") if item.created_at else None,
+                )
+            )
+
+    # Sort: folders first, then files, alphabetically
+    result.sort(key=lambda x: (not x.is_folder, x.name.lower()))
+    return result
+
+
 # --- Web UI Routes ---
 
 
@@ -636,13 +765,17 @@ async def ui_dashboard(request: Request) -> HTMLResponse:
 
 
 @app.get("/ui/upload", response_class=HTMLResponse)
-async def ui_upload(request: Request) -> HTMLResponse:
-    """Upload page with drag-and-drop."""
+async def ui_upload(
+    request: Request,
+    target: str = Query("/", description="Default target path"),
+) -> HTMLResponse:
+    """Upload page with drag-and-drop and target path."""
     return templates.TemplateResponse(
         request,
         "upload.html",
         {
             "active_page": "upload",
+            "target": target,
         },
     )
 
@@ -650,29 +783,44 @@ async def ui_upload(request: Request) -> HTMLResponse:
 @app.get("/ui/browse", response_class=HTMLResponse)
 async def ui_browse(
     request: Request,
-    prefix: str = Query("", description="Key prefix filter"),
+    path: str = Query("/", description="Path to browse"),
     content_type: str | None = Query(None, description="Content type filter"),
     next_token: str | None = Query(None, description="Pagination token"),
 ) -> HTMLResponse:
-    """Browse stored content."""
+    """Browse stored content at a path with folder navigation."""
+    path = normalize_path(path)
+
+    # Ensure path ends with / for folder browsing (unless it's just /)
+    if path != "/" and not path.endswith("/"):
+        path = path + "/"
+
+    # Generate navigation context
+    breadcrumbs = generate_breadcrumbs(path)
+    parent_path = get_parent_path(path)
+
     try:
         stash = get_stash()
         result = stash.browse(
-            prefix=prefix,
+            path=path,
             content_type=content_type,
-            limit=20,
+            limit=100,  # Get more to ensure we see all folders
             continuation_token=next_token,
         )
+
+        # Extract folders and files at this level
+        items = extract_folders_and_files(path, result.items)
 
         return templates.TemplateResponse(
             request,
             "browse.html",
             {
                 "active_page": "browse",
-                "items": result.items,
+                "items": items,
                 "total": result.total,
                 "next_token": result.next_token,
-                "prefix": prefix,
+                "path": path,
+                "breadcrumbs": breadcrumbs,
+                "parent_path": parent_path,
                 "content_type": content_type,
             },
         )
@@ -684,7 +832,9 @@ async def ui_browse(
                 "active_page": "browse",
                 "error": "Storage not initialized.",
                 "items": [],
-                "prefix": prefix,
+                "path": path,
+                "breadcrumbs": breadcrumbs,
+                "parent_path": parent_path,
                 "content_type": content_type,
             },
         )
@@ -696,10 +846,34 @@ async def ui_browse(
                 "active_page": "browse",
                 "error": str(e),
                 "items": [],
-                "prefix": prefix,
+                "path": path,
+                "breadcrumbs": breadcrumbs,
+                "parent_path": parent_path,
                 "content_type": content_type,
             },
         )
+
+
+class UISearchResult:
+    """Search result with navigation context."""
+
+    def __init__(
+        self,
+        path: str,
+        key: str,
+        score: float,
+        content_type: str | None,
+        file_size: int | None,
+        url: str | None,
+    ):
+        self.path = path
+        self.key = key
+        self.score = score
+        self.content_type = content_type
+        self.file_size = file_size
+        self.url = url
+        self.filename = get_filename(path)
+        self.containing_folder = get_containing_folder(path)
 
 
 @app.get("/ui/search", response_class=HTMLResponse)
@@ -708,21 +882,35 @@ async def ui_search(
     q: str = Query("", description="Search query"),
     tag: str | None = Query(None, description="Filter by tag"),
     content_type: str | None = Query(None, description="Filter by content type"),
+    path: str | None = Query(None, description="Filter by path prefix"),
 ) -> HTMLResponse:
-    """Search page with semantic query."""
-    results = []
+    """Search page with semantic query and folder navigation."""
+    results: list[UISearchResult] = []
     error = None
 
     if q:
         try:
             stash = get_stash()
             tags_list = [tag] if tag else None
-            results = stash.query(
+            search_results = stash.query(
                 query_text=q,
                 top_k=20,
                 content_type=content_type,
                 tags=tags_list,
+                path=path,
             )
+            # Wrap results with navigation context
+            results = [
+                UISearchResult(
+                    path=r.path,
+                    key=r.key,
+                    score=r.score,
+                    content_type=r.content_type,
+                    file_size=r.file_size,
+                    url=r.url,
+                )
+                for r in search_results
+            ]
         except NotInitializedError:
             error = "Storage not initialized."
         except SemStashError as e:
@@ -737,17 +925,25 @@ async def ui_search(
             "results": results,
             "tag": tag,
             "content_type": content_type,
+            "path": path,
             "error": error,
         },
     )
 
 
-@app.get("/ui/content/{key:path}", response_class=HTMLResponse)
-async def ui_content(request: Request, key: str) -> HTMLResponse:
-    """Content detail page."""
+@app.get("/ui/content/{path:path}", response_class=HTMLResponse)
+async def ui_content(request: Request, path: str) -> HTMLResponse:
+    """Content detail page with navigation context."""
+    path = normalize_path(path)
+
+    # Generate navigation context
+    containing_folder = get_containing_folder(path)
+    breadcrumbs = generate_breadcrumbs(path)
+    filename = get_filename(path)
+
     try:
         stash = get_stash()
-        content = stash.get(key)
+        content = stash.get(path)
 
         return templates.TemplateResponse(
             request,
@@ -755,10 +951,13 @@ async def ui_content(request: Request, key: str) -> HTMLResponse:
             {
                 "active_page": "browse",
                 "content": content,
+                "containing_folder": containing_folder,
+                "breadcrumbs": breadcrumbs,
+                "filename": filename,
             },
         )
     except ContentNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Content not found: {key}") from None
+        raise HTTPException(status_code=404, detail=f"Content not found: {path}") from None
     except NotInitializedError:
         raise HTTPException(
             status_code=400,

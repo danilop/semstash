@@ -1,19 +1,31 @@
 {% extends "base.html" %}
-{% block title %}{{ content.key }} - SemStash{% endblock %}
+{% block title %}{{ content.path }} - SemStash{% endblock %}
 
 {% block content %}
-<div class="flex justify-between items-center mb-3">
-    <h1>{{ content.key }}</h1>
+<div class="flex justify-between items-center mb-2">
+    <h1>{{ filename }}</h1>
     <div class="flex gap-2">
         <a href="{{ content.url }}" class="btn btn-primary" target="_blank">Download</a>
-        <button class="btn btn-danger" onclick="confirmDelete('{{ content.key }}')">Delete</button>
+        <button class="btn btn-danger" onclick="confirmDelete('{{ content.path }}')">Delete</button>
     </div>
 </div>
+
+<!-- Breadcrumb Navigation -->
+<nav class="breadcrumbs mb-3">
+    {% for name, crumb_path in breadcrumbs %}
+        {% if loop.last %}
+            <span class="current">{{ name }}</span>
+        {% else %}
+            <a href="/ui/browse?path={{ crumb_path }}">{{ name }}</a>
+            <span class="separator">&gt;</span>
+        {% endif %}
+    {% endfor %}
+</nav>
 
 <div class="card mb-2">
     {% if content.content_type.startswith('image/') %}
     <div class="preview-container">
-        <img src="{{ content.url }}" alt="{{ content.key }}" class="preview">
+        <img src="{{ content.url }}" alt="{{ content.path }}" class="preview">
     </div>
     {% elif content.content_type.startswith('video/') %}
     <div class="preview-container">
@@ -30,11 +42,11 @@
     {% else %}
     <div class="preview-container">
         <div class="file-icon" style="width: 100px; height: 100px; font-size: 3rem; margin: 0 auto;">
-            {% if 'spreadsheet' in content.content_type %}📊
-            {% elif 'presentation' in content.content_type %}📽️
-            {% elif 'document' in content.content_type or 'word' in content.content_type %}📝
-            {% elif content.content_type.startswith('text/') %}📃
-            {% else %}📁{% endif %}
+            {% if 'spreadsheet' in content.content_type %}&#128202;
+            {% elif 'presentation' in content.content_type %}&#127902;
+            {% elif 'document' in content.content_type or 'word' in content.content_type %}&#128221;
+            {% elif content.content_type.startswith('text/') %}&#128195;
+            {% else %}&#128193;{% endif %}
         </div>
         <p class="mt-2 text-muted">Preview not available for this file type</p>
     </div>
@@ -45,8 +57,12 @@
     <h2 class="mb-2">Details</h2>
     <table>
         <tr>
-            <td><strong>Key</strong></td>
-            <td>{{ content.key }}</td>
+            <td><strong>Path</strong></td>
+            <td>{{ content.path }}</td>
+        </tr>
+        <tr>
+            <td><strong>Folder</strong></td>
+            <td><a href="/ui/browse?path={{ containing_folder }}">{{ containing_folder }}</a></td>
         </tr>
         <tr>
             <td><strong>Content Type</strong></td>
@@ -74,14 +90,14 @@
 </div>
 
 <div class="mt-2">
-    <a href="/ui/browse" class="btn btn-secondary">← Back to Browse</a>
+    <a href="/ui/browse?path={{ containing_folder }}" class="btn btn-secondary">&#8592; Back to {{ containing_folder }}</a>
 </div>
 
 <!-- Delete confirmation modal -->
 <div id="delete-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000;">
     <div style="background: white; max-width: 400px; margin: 20vh auto; padding: 2rem; border-radius: 0.5rem;">
         <h2 class="mb-2">Delete Content?</h2>
-        <p class="mb-2">Are you sure you want to delete <strong id="delete-key"></strong>? This action cannot be undone.</p>
+        <p class="mb-2">Are you sure you want to delete <strong id="delete-path"></strong>? This action cannot be undone.</p>
         <div class="flex gap-2">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <button class="btn btn-danger" onclick="performDelete()">Delete</button>
@@ -90,27 +106,27 @@
 </div>
 
 <script>
-let keyToDelete = '';
+let pathToDelete = '';
 
-function confirmDelete(key) {
-    keyToDelete = key;
-    document.getElementById('delete-key').textContent = key;
+function confirmDelete(path) {
+    pathToDelete = path;
+    document.getElementById('delete-path').textContent = path;
     document.getElementById('delete-modal').style.display = 'block';
 }
 
 function closeModal() {
     document.getElementById('delete-modal').style.display = 'none';
-    keyToDelete = '';
+    pathToDelete = '';
 }
 
 async function performDelete() {
     try {
-        const response = await fetch('/content/' + encodeURIComponent(keyToDelete), {
+        const response = await fetch('/content' + pathToDelete, {
             method: 'DELETE'
         });
 
         if (response.ok) {
-            window.location.href = '/ui/browse?flash=Content deleted successfully&flash_type=success';
+            window.location.href = '/ui/browse?path={{ containing_folder }}';
         } else {
             const data = await response.json();
             alert('Failed to delete: ' + (data.detail || 'Unknown error'));

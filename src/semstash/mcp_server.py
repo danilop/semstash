@@ -1,7 +1,8 @@
 """MCP Server for semstash - AI agent interface.
 
 Provides MCP tools for semantic storage operations using FastMCP.
-Can be used with any MCP-compatible client.
+Can be used with any MCP-compatible client. All content is addressed
+by paths (like a filesystem), with '/' as root.
 
 Usage:
     # Run the server
@@ -51,15 +52,24 @@ def init() -> str:
 
 
 @mcp.tool()
-def upload(file_path: str, key: str | None = None, force: bool = False) -> str:
-    """Upload a file to semantic storage. Stores content and generates embeddings for search."""
-    path = Path(file_path)
-    if not path.exists():
+def upload(file_path: str, target: str, force: bool = False) -> str:
+    """Upload a file to semantic storage. Stores content and generates embeddings for search.
+
+    Args:
+        file_path: Local file path to upload.
+        target: Target path in storage. Use '/' for root (preserves filename),
+            '/folder/' to upload to folder (preserves filename),
+            '/folder/name.ext' to rename on upload.
+        force: Overwrite if content already exists at target path.
+    """
+    source = Path(file_path)
+    if not source.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    result = get_cached_stash().upload(file_path=path, key=key, force=force)
+    result = get_cached_stash().upload(file_path=source, target=target, force=force)
     return to_json(
         {
+            "path": result.path,
             "key": result.key,
             "content_type": result.content_type,
             "file_size": result.file_size,
@@ -72,6 +82,7 @@ def query(
     query_text: str,
     top_k: int = DEFAULT_SEARCH_TOP_K,
     tags: list[str] | None = None,
+    path: str | None = None,
 ) -> str:
     """Query for content using natural language. Returns semantically similar content.
 
@@ -79,14 +90,21 @@ def query(
         query_text: Natural language query.
         top_k: Maximum number of results to return.
         tags: Filter results by tags (any match).
+        path: Filter results by path prefix (e.g., '/docs/').
     """
-    results = get_cached_stash().query(query_text=query_text, top_k=top_k, tags=tags)
+    results = get_cached_stash().query(query_text=query_text, top_k=top_k, tags=tags, path=path)
     return to_json(
         {
             "query": query_text,
             "count": len(results),
             "results": [
-                {"key": r.key, "score": r.score, "content_type": r.content_type, "url": r.url}
+                {
+                    "path": r.path,
+                    "key": r.key,
+                    "score": r.score,
+                    "content_type": r.content_type,
+                    "url": r.url,
+                }
                 for r in results
             ],
         }
@@ -94,11 +112,11 @@ def query(
 
 
 @mcp.tool()
-def get(key: str, return_content: bool = False) -> str:
+def get(path: str, return_content: bool = False) -> str:
     """Get content metadata and optionally the content itself.
 
     Args:
-        key: Storage key of the content.
+        path: Path of the content (e.g., '/docs/readme.txt').
         return_content: If True, returns the actual content:
             - Text files: returns text directly
             - Documents (PDF, DOCX, XLSX, PPTX): converted to Markdown
@@ -109,9 +127,10 @@ def get(key: str, return_content: bool = False) -> str:
         JSON with metadata, URL, and optionally content.
     """
     stash = get_cached_stash()
-    result = stash.get(key)
+    result = stash.get(path)
 
     response: dict[str, Any] = {
+        "path": result.path,
         "key": result.key,
         "content_type": result.content_type,
         "file_size": result.file_size,
@@ -121,7 +140,7 @@ def get(key: str, return_content: bool = False) -> str:
     if return_content:
         # Download to temp file
         with tempfile.TemporaryDirectory() as tmpdir:
-            dest = stash.download(key, Path(tmpdir))
+            dest = stash.download(path, Path(tmpdir))
 
             # Handle based on content type
             if result.content_type.startswith("text/"):
@@ -149,21 +168,36 @@ def get(key: str, return_content: bool = False) -> str:
 
 
 @mcp.tool()
-def delete(key: str) -> str:
-    """Delete content from storage."""
-    result = get_cached_stash().delete(key)
-    return to_json({"key": result.key, "deleted": result.deleted})
+def delete(path: str) -> str:
+    """Delete content from storage.
+
+    Args:
+        path: Path of the content to delete (e.g., '/docs/readme.txt').
+    """
+    result = get_cached_stash().delete(path)
+    return to_json({"path": path, "key": result.key, "deleted": result.deleted})
 
 
 @mcp.tool()
-def browse(prefix: str = "", limit: int = DEFAULT_BROWSE_LIMIT) -> str:
-    """Browse stored content."""
-    result = get_cached_stash().browse(prefix=prefix, limit=limit)
+def browse(path: str, limit: int = DEFAULT_BROWSE_LIMIT) -> str:
+    """Browse stored content at a path.
+
+    Args:
+        path: Path to browse. Use '/' for root, '/folder/' for subfolders.
+        limit: Maximum number of items to return.
+    """
+    result = get_cached_stash().browse(path=path, limit=limit)
     return to_json(
         {
+            "path": path,
             "total": result.total,
             "items": [
-                {"key": item.key, "content_type": item.content_type, "file_size": item.file_size}
+                {
+                    "path": item.path,
+                    "key": item.key,
+                    "content_type": item.content_type,
+                    "file_size": item.file_size,
+                }
                 for item in result.items
             ],
         }

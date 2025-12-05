@@ -10,7 +10,7 @@ class SemStashError(Exception):
 
     Example:
         try:
-            stash.upload("file.txt")
+            stash.upload("file.txt", target="/")
         except SemStashError as e:
             print(f"semstash error: {e}")
     """

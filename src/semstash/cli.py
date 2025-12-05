@@ -1,16 +1,22 @@
 """Command-line interface for semstash.
 
 Provides a rich CLI for semantic storage operations.
+All content is addressed by paths (like a filesystem), with '/' as root.
 
 Usage:
     semstash init my-stash
-    semstash my-stash upload photo.jpg
+    semstash my-stash upload photo.jpg /                    # Upload to root
+    semstash my-stash upload photo.jpg /images/             # Upload to /images/ folder
+    semstash my-stash upload photo.jpg /images/sunset.jpg   # Upload with rename
+    semstash my-stash upload-dir ./docs/ /docs/             # Upload directory
     semstash my-stash query "sunset on beach"
+    semstash my-stash query "sunset" --path /images/        # Filter by path
     semstash my-stash query "sunset" -d ./downloads/
-    semstash my-stash get photo.jpg
-    semstash my-stash get document.pdf -d ./local.pdf -m
-    semstash my-stash delete photo.jpg
-    semstash my-stash browse
+    semstash my-stash get /images/photo.jpg
+    semstash my-stash get /docs/readme.pdf -d ./local.pdf -m
+    semstash my-stash delete /images/photo.jpg
+    semstash my-stash browse /                              # Browse root
+    semstash my-stash browse /images/                       # Browse folder
     semstash my-stash stats
     semstash my-stash check
     semstash my-stash sync
@@ -59,7 +65,7 @@ console = Console()
 
 def download_content(
     client: SemStash,
-    key: str,
+    path: str,
     destination: Path,
     content_type: str,
     as_markdown: bool = False,
@@ -69,7 +75,7 @@ def download_content(
 
     Returns the final path (either original or .md if converted).
     """
-    dest = client.download(key, destination)
+    dest = client.download(path, destination)
 
     if as_markdown and is_markdown_convertible(content_type):
         md_content = to_markdown(dest, content_type)
@@ -77,7 +83,7 @@ def download_content(
         md_path.write_text(md_content, encoding="utf-8")
         dest.unlink()  # Remove original
         if output == "text":
-            console.print(f"[green]✓[/green] {key} → [bold]{md_path.name}[/bold]")
+            console.print(f"[green]✓[/green] {path} → [bold]{md_path.name}[/bold]")
         return md_path
 
     if output == "text":
@@ -193,23 +199,39 @@ def init(
 def upload(
     stash: StashArgument,
     files: Annotated[list[Path], typer.Argument(help="Files to upload (supports glob: *.jpg)")],
+    target: Annotated[
+        str,
+        typer.Argument(
+            help="Target path: '/' root, '/folder/' keeps name, '/path/name.ext' renames"
+        ),
+    ],
     tags: Annotated[list[str] | None, typer.Option("--tag", "-t", help="Tags")] = None,
     region: RegionOption = DEFAULT_REGION,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite if key exists")] = False,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite if exists")] = False,
     output: OutputOption = "text",
     quiet: QuietOption = False,
 ) -> None:
     """Upload files to semantic storage.
 
     Stores files and generates embeddings for semantic search.
-    The filename is used as the storage key.
-    Use --force to overwrite existing content with the same key.
+    Target path determines where files are stored:
+    - '/' uploads to root (preserves filename)
+    - '/folder/' uploads to folder (preserves filename)
+    - '/path/name.ext' uploads with exact path (renames file)
+
+    Use --force to overwrite existing content.
 
     Examples:
-        semstash mystash upload photo.jpg
-        semstash mystash upload *.jpg *.png
-        semstash mystash upload documents/*.pdf --tag work
+        semstash mystash upload photo.jpg /
+        semstash mystash upload photo.jpg /images/
+        semstash mystash upload photo.jpg /images/sunset.jpg
+        semstash mystash upload *.jpg /photos/
+        semstash mystash upload documents/*.pdf /docs/ --tag work
     """
+    # Validate: multiple files require target ending with /
+    if len(files) > 1 and not target.endswith("/"):
+        error_exit("Target must end with '/' when uploading multiple files.")
+
     # Validate all files exist first
     for file_path in files:
         if not file_path.exists():
@@ -231,11 +253,12 @@ def upload(
                 progress.add_task(f"Uploading {files[0].name}...", total=None)
                 result = client.upload(
                     file_path=files[0],
+                    target=target,
                     tags=tags if tags else None,
                     force=force,
                 )
                 results.append(result)
-            console.print(f"[green]✓[/green] Uploaded [bold]{result.key}[/bold]")
+            console.print(f"[green]✓[/green] Uploaded [bold]{result.path}[/bold]")
         elif show_progress and len(files) > 1:
             # Multiple files: use progress bar
             with Progress(console=console) as progress:
@@ -244,6 +267,7 @@ def upload(
                     progress.update(task, description=f"Uploading {file_path.name}...")
                     result = client.upload(
                         file_path=file_path,
+                        target=target,
                         tags=tags if tags else None,
                         force=force,
                     )
@@ -254,6 +278,7 @@ def upload(
             for file_path in files:
                 result = client.upload(
                     file_path=file_path,
+                    target=target,
                     tags=tags if tags else None,
                     force=force,
                 )
@@ -264,6 +289,7 @@ def upload(
                 {
                     "uploaded": [
                         {
+                            "path": r.path,
                             "key": r.key,
                             "content_type": r.content_type,
                             "file_size": r.file_size,
@@ -276,9 +302,105 @@ def upload(
             )
         elif quiet:
             for r in results:
-                console.print(r.key)
+                console.print(r.path)
         elif len(results) > 1:
             console.print(f"\n[green]✓[/green] Uploaded {len(results)} files")
+
+    except NotInitializedError:
+        error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")
+    except ContentExistsError as e:
+        error_exit(f"{e}\nUse --force to overwrite.")
+    except UnsupportedContentTypeError as e:
+        error_exit(str(e))
+    except SemStashError as e:
+        error_exit(str(e))
+
+
+@app.command(name="upload-dir")
+def upload_dir(
+    stash: StashArgument,
+    source_dir: Annotated[Path, typer.Argument(help="Source directory to upload")],
+    target_path: Annotated[
+        str,
+        typer.Argument(help="Target path (must end with '/')"),
+    ],
+    pattern: Annotated[str, typer.Option("--pattern", "-p", help="Glob pattern")] = "**/*",
+    tags: Annotated[list[str] | None, typer.Option("--tag", "-t", help="Tags")] = None,
+    region: RegionOption = DEFAULT_REGION,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite if exists")] = False,
+    output: OutputOption = "text",
+    quiet: QuietOption = False,
+) -> None:
+    """Upload a directory to semantic storage.
+
+    Recursively uploads all matching files from source directory
+    to the target path, preserving the directory structure.
+
+    Examples:
+        semstash mystash upload-dir ./docs/ /docs/
+        semstash mystash upload-dir ./images/ /photos/ --pattern "*.jpg"
+        semstash mystash upload-dir ./data/ /archive/ --tag backup
+    """
+    # Validate target path ends with /
+    if not target_path.endswith("/"):
+        error_exit("Target path must end with '/'")
+
+    # Validate source directory exists
+    if not source_dir.exists():
+        error_exit(f"Directory not found: {source_dir}")
+    if not source_dir.is_dir():
+        error_exit(f"Not a directory: {source_dir}")
+
+    try:
+        client = SemStash(bucket=stash, region=region)
+        show_progress = output == "text" and not quiet
+
+        if show_progress:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                progress.add_task(f"Uploading {source_dir}...", total=None)
+                results = client.upload_directory(
+                    source_dir=source_dir,
+                    target_path=target_path,
+                    pattern=pattern,
+                    tags=tags,
+                    force=force,
+                )
+        else:
+            results = client.upload_directory(
+                source_dir=source_dir,
+                target_path=target_path,
+                pattern=pattern,
+                tags=tags,
+                force=force,
+            )
+
+        if output == "json":
+            output_json(
+                {
+                    "source_dir": str(source_dir),
+                    "target_path": target_path,
+                    "uploaded": [
+                        {
+                            "path": r.path,
+                            "key": r.key,
+                            "content_type": r.content_type,
+                            "file_size": r.file_size,
+                        }
+                        for r in results
+                    ],
+                    "count": len(results),
+                }
+            )
+        elif quiet:
+            for r in results:
+                console.print(r.path)
+        else:
+            console.print(f"[green]✓[/green] Uploaded {len(results)} files to {target_path}")
 
     except NotInitializedError:
         error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")
@@ -300,6 +422,9 @@ def query(
     ] = None,
     content_type: Annotated[str, typer.Option("--type", help="Filter by content type")] = "",
     tags: Annotated[list[str] | None, typer.Option("--tag", "-t", help="Filter by tag")] = None,
+    path: Annotated[
+        str | None, typer.Option("--path", "-P", help="Filter by path prefix (e.g., /docs/)")
+    ] = None,
     download: Annotated[
         Path | None, typer.Option("--download", "-d", help="Download results to directory")
     ] = None,
@@ -318,10 +443,16 @@ def query(
     """Query for content using natural language.
 
     Returns semantically similar content ranked by relevance.
+    Use --path to filter results by path prefix.
     Use -d to download results to a directory.
     Use -u to output presigned URLs only (one per line, for piping).
     Use -m to convert documents (PDF, DOCX, etc.) to Markdown.
     Use SEMSTASH_SEARCH_TOP_K env var to change the default.
+
+    Examples:
+        semstash mystash query "sunset on beach"
+        semstash mystash query "readme" --path /docs/
+        semstash mystash query "cat photos" -d ./downloads/
     """
     # Validate mutually exclusive options
     if download and urls:
@@ -343,6 +474,7 @@ def query(
                     top_k=top_k,
                     content_type=content_type or None,
                     tags=tags,
+                    path=path,
                     url_expiry=expiry,
                 )
         else:
@@ -351,6 +483,7 @@ def query(
                 top_k=top_k,
                 content_type=content_type or None,
                 tags=tags,
+                path=path,
                 url_expiry=expiry,
             )
 
@@ -360,7 +493,7 @@ def query(
             for r in results:
                 download_content(
                     client=client,
-                    key=r.key,
+                    path=r.path,
                     destination=download,
                     content_type=r.content_type or "",
                     as_markdown=markdown,
@@ -381,6 +514,7 @@ def query(
                     "query": query_text,
                     "results": [
                         {
+                            "path": r.path,
                             "key": r.key,
                             "score": r.score,
                             "content_type": r.content_type,
@@ -397,14 +531,14 @@ def query(
             if results:
                 table = Table(show_header=True, header_style="bold cyan")
                 table.add_column("Score", width=8)
-                table.add_column("Key", min_width=20)
+                table.add_column("Path", min_width=20)
                 table.add_column("Type", width=15)
                 table.add_column("Size", width=10, justify="right")
 
                 for r in results:
                     table.add_row(
                         f"{r.score:.2f}",
-                        r.key,
+                        r.path,
                         r.content_type or "unknown",
                         format_size(r.file_size) if r.file_size else "-",
                     )
@@ -422,10 +556,10 @@ def query(
 @app.command()
 def get(
     stash: StashArgument,
-    keys: Annotated[list[str], typer.Argument(help="Content keys")],
+    paths: Annotated[list[str], typer.Argument(help="Content paths (e.g., /photo.jpg)")],
     download: Annotated[
         Path | None,
-        typer.Option("--download", "-d", help="Download to path (directory for multiple keys)"),
+        typer.Option("--download", "-d", help="Download to path (directory for multiple items)"),
     ] = None,
     expiry: Annotated[
         int | None, typer.Option("--expiry", "-e", help="URL expiry in seconds (default: 3600)")
@@ -442,22 +576,23 @@ def get(
     Use -m to convert documents (PDF, DOCX, etc.) to Markdown.
 
     Examples:
-        semstash mystash get photo.jpg
-        semstash mystash get photo1.jpg photo2.jpg -d ./downloads/
+        semstash mystash get /photo.jpg
+        semstash mystash get /images/photo.jpg -d ./local.jpg
+        semstash mystash get /docs/a.pdf /docs/b.pdf -d ./downloads/
     """
     try:
         client = SemStash(bucket=stash, region=region)
         results = []
 
-        for key in keys:
+        for path in paths:
             try:
-                result = client.get(key, url_expiry=expiry)
+                result = client.get(path, url_expiry=expiry)
                 results.append(result)
             except ContentNotFoundError:
-                if len(keys) == 1:
-                    error_exit(f"Content not found: {key}")
+                if len(paths) == 1:
+                    error_exit(f"Content not found: {path}")
                 else:
-                    console.print(f"[yellow]⚠[/yellow] Not found: {key}")
+                    console.print(f"[yellow]⚠[/yellow] Not found: {path}")
                     continue
 
         if not results:
@@ -465,13 +600,13 @@ def get(
 
         # Handle download
         if download:
-            # For multiple keys, download must be a directory
-            if len(keys) > 1:
+            # For multiple paths, download must be a directory
+            if len(paths) > 1:
                 download.mkdir(parents=True, exist_ok=True)
             for result in results:
                 download_content(
                     client=client,
-                    key=result.key,
+                    path=result.path,
                     destination=download,
                     content_type=result.content_type,
                     as_markdown=markdown,
@@ -484,6 +619,7 @@ def get(
                 r = results[0]
                 output_json(
                     {
+                        "path": r.path,
                         "key": r.key,
                         "content_type": r.content_type,
                         "file_size": r.file_size,
@@ -496,6 +632,7 @@ def get(
                     {
                         "items": [
                             {
+                                "path": r.path,
                                 "key": r.key,
                                 "content_type": r.content_type,
                                 "file_size": r.file_size,
@@ -509,7 +646,7 @@ def get(
                 )
         else:
             for result in results:
-                console.print(f"\n[bold]{result.key}[/bold]")
+                console.print(f"\n[bold]{result.path}[/bold]")
                 console.print(f"  Type: {result.content_type}")
                 console.print(f"  Size: {format_size(result.file_size)}")
                 console.print(f"  Created: {result.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -524,7 +661,7 @@ def get(
 @app.command()
 def delete(
     stash: StashArgument,
-    keys: Annotated[list[str], typer.Argument(help="Content keys")],
+    paths: Annotated[list[str], typer.Argument(help="Content paths (e.g., /photo.jpg)")],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation")] = False,
     region: RegionOption = DEFAULT_REGION,
     output: OutputOption = "text",
@@ -535,14 +672,15 @@ def delete(
     Removes both the content and its embedding.
 
     Examples:
-        semstash mystash delete photo.jpg
-        semstash mystash delete photo1.jpg photo2.jpg -y
+        semstash mystash delete /photo.jpg
+        semstash mystash delete /images/photo.jpg
+        semstash mystash delete /docs/a.pdf /docs/b.pdf -y
     """
     if not yes and output == "text":
-        if len(keys) == 1:
-            confirm = typer.confirm(f"Delete {keys[0]}?", default=False)
+        if len(paths) == 1:
+            confirm = typer.confirm(f"Delete {paths[0]}?", default=False)
         else:
-            confirm = typer.confirm(f"Delete {len(keys)} items?", default=False)
+            confirm = typer.confirm(f"Delete {len(paths)} items?", default=False)
         if not confirm:
             raise typer.Abort()
 
@@ -550,19 +688,24 @@ def delete(
         client = SemStash(bucket=stash, region=region)
         results = []
 
-        for key in keys:
-            result = client.delete(key)
+        for path in paths:
+            result = client.delete(path)
             results.append(result)
             if output == "text" and not quiet:
-                console.print(f"[green]✓[/green] Deleted [bold]{result.key}[/bold]")
+                console.print(f"[green]✓[/green] Deleted [bold]{path}[/bold]")
 
         if output == "json":
             if len(results) == 1:
-                output_json({"key": results[0].key, "deleted": results[0].deleted})
+                output_json({
+                    "path": paths[0], "key": results[0].key, "deleted": results[0].deleted
+                })
             else:
                 output_json(
                     {
-                        "deleted": [{"key": r.key, "deleted": r.deleted} for r in results],
+                        "deleted": [
+                            {"path": p, "key": r.key, "deleted": r.deleted}
+                            for p, r in zip(paths, results, strict=True)
+                        ],
                         "count": len(results),
                     }
                 )
@@ -576,7 +719,10 @@ def delete(
 @app.command()
 def browse(
     stash: StashArgument,
-    prefix: Annotated[str, typer.Option("--prefix", "-p", help="Key prefix filter")] = "",
+    path: Annotated[
+        str,
+        typer.Argument(help="Path to browse: '/' for root, '/folder/' for subfolder"),
+    ],
     content_type: Annotated[str, typer.Option("--type", help="Content type filter")] = "",
     limit: Annotated[
         int | None,
@@ -585,15 +731,20 @@ def browse(
     region: RegionOption = DEFAULT_REGION,
     output: OutputOption = "text",
 ) -> None:
-    """Browse stored content.
+    """Browse stored content at a path.
 
-    List all content with optional filtering by prefix or type.
+    List content at the specified path with optional filtering by type.
     Use SEMSTASH_BROWSE_LIMIT env var to change the default.
+
+    Examples:
+        semstash mystash browse /
+        semstash mystash browse /images/
+        semstash mystash browse /docs/ --type application/pdf
     """
     try:
         client = SemStash(bucket=stash, region=region)
         result = client.browse(
-            prefix=prefix,
+            path=path,
             content_type=content_type or None,
             limit=limit,
         )
@@ -601,8 +752,10 @@ def browse(
         if output == "json":
             output_json(
                 {
+                    "path": path,
                     "items": [
                         {
+                            "path": item.path,
                             "key": item.key,
                             "content_type": item.content_type,
                             "file_size": item.file_size,
@@ -616,18 +769,18 @@ def browse(
             )
         else:
             if not result.items:
-                console.print("\n  [dim]No content found[/dim]")
+                console.print(f"\n  [dim]No content found at {path}[/dim]")
                 return
 
             table = Table(show_header=True, header_style="bold cyan")
-            table.add_column("Key", min_width=25)
+            table.add_column("Path", min_width=25)
             table.add_column("Type", width=15)
             table.add_column("Size", width=10, justify="right")
             table.add_column("Created", width=12)
 
             for item in result.items:
                 table.add_row(
-                    item.key,
+                    item.path,
                     item.content_type,
                     format_size(item.file_size),
                     item.created_at.strftime("%Y-%m-%d"),

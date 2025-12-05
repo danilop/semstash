@@ -1,16 +1,32 @@
 {% extends "base.html" %}
-{% block title %}Browse - SemStash{% endblock %}
+{% block title %}Browse {{ path }} - SemStash{% endblock %}
 
 {% block content %}
 <div class="flex justify-between items-center mb-3">
     <h1>Browse Content</h1>
-    <a href="/ui/upload" class="btn btn-primary">Upload New</a>
+    <a href="/ui/upload?target={{ path }}" class="btn btn-primary">Upload Here</a>
 </div>
+
+<!-- Breadcrumb Navigation -->
+<nav class="breadcrumbs mb-2">
+    {% for name, crumb_path in breadcrumbs %}
+        {% if loop.last %}
+            <span class="current">{{ name }}</span>
+        {% else %}
+            <a href="/ui/browse?path={{ crumb_path }}">{{ name }}</a>
+            <span class="separator">&gt;</span>
+        {% endif %}
+    {% endfor %}
+
+    {% if parent_path is not none %}
+        <a href="/ui/browse?path={{ parent_path }}" class="btn btn-secondary btn-sm ml-auto">&#8593; Up</a>
+    {% endif %}
+</nav>
 
 <div class="card mb-2">
     <form method="GET" action="/ui/browse" class="flex gap-2 items-center">
         <div class="form-group" style="margin-bottom: 0; flex: 1;">
-            <input type="text" class="form-control" name="prefix" value="{{ prefix }}" placeholder="Filter by prefix...">
+            <input type="text" class="form-control" name="path" value="{{ path }}" placeholder="Path (e.g., / or /docs/)">
         </div>
         <div class="form-group" style="margin-bottom: 0;">
             <select class="form-control" name="content_type">
@@ -22,7 +38,7 @@
                 <option value="application/pdf" {% if content_type == 'application/pdf' %}selected{% endif %}>PDF</option>
             </select>
         </div>
-        <button type="submit" class="btn btn-secondary">Filter</button>
+        <button type="submit" class="btn btn-secondary">Go</button>
     </form>
 </div>
 
@@ -38,7 +54,7 @@
                 <th>Name</th>
                 <th>Type</th>
                 <th>Size</th>
-                <th>Created</th>
+                <th>Modified</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -46,15 +62,39 @@
             {% for item in items %}
             <tr>
                 <td>
-                    <a href="/ui/content/{{ item.key }}" style="text-decoration: none; color: var(--primary);">
-                        {{ item.key }}
-                    </a>
+                    {% if item.is_folder %}
+                        <a href="/ui/browse?path={{ item.full_path }}" style="text-decoration: none; color: var(--primary);">
+                            &#128193; {{ item.name }}/
+                        </a>
+                    {% else %}
+                        <a href="/ui/content{{ item.full_path }}" style="text-decoration: none; color: var(--primary);">
+                            &#128196; {{ item.name }}
+                        </a>
+                    {% endif %}
                 </td>
-                <td class="text-muted">{{ item.content_type }}</td>
-                <td class="text-muted">{{ format_size(item.file_size) }}</td>
-                <td class="text-muted">{{ item.created_at.strftime('%Y-%m-%d') if item.created_at else '' }}</td>
+                <td class="text-muted">
+                    {% if item.is_folder %}
+                        folder
+                    {% else %}
+                        {{ item.content_type }}
+                    {% endif %}
+                </td>
+                <td class="text-muted">
+                    {% if item.is_folder %}
+                        -
+                    {% else %}
+                        {{ format_size(item.file_size) }}
+                    {% endif %}
+                </td>
+                <td class="text-muted">
+                    {{ item.created_at if item.created_at else '-' }}
+                </td>
                 <td>
-                    <a href="/ui/content/{{ item.key }}" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">View</a>
+                    {% if item.is_folder %}
+                        <a href="/ui/browse?path={{ item.full_path }}" class="btn btn-secondary btn-sm">Open</a>
+                    {% else %}
+                        <a href="/ui/content{{ item.full_path }}" class="btn btn-secondary btn-sm">View</a>
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
@@ -64,10 +104,10 @@
     {% if next_token or prev_token %}
     <div class="pagination">
         {% if prev_token %}
-        <a href="/ui/browse?prefix={{ prefix }}&content_type={{ content_type or '' }}&next_token={{ prev_token }}" class="btn btn-secondary">← Previous</a>
+        <a href="/ui/browse?path={{ path }}&content_type={{ content_type or '' }}&next_token={{ prev_token }}" class="btn btn-secondary">&#8592; Previous</a>
         {% endif %}
         {% if next_token %}
-        <a href="/ui/browse?prefix={{ prefix }}&content_type={{ content_type or '' }}&next_token={{ next_token }}" class="btn btn-secondary">Next →</a>
+        <a href="/ui/browse?path={{ path }}&content_type={{ content_type or '' }}&next_token={{ next_token }}" class="btn btn-secondary">Next &#8594;</a>
         {% endif %}
     </div>
     {% endif %}
@@ -77,8 +117,8 @@
 
 {% else %}
 <div class="card text-center">
-    <p class="text-muted mb-2">No content found{% if prefix %} matching "{{ prefix }}"{% endif %}</p>
-    <a href="/ui/upload" class="btn btn-primary">Upload your first file</a>
+    <p class="text-muted mb-2">No content found{% if path and path != '/' %} in "{{ path }}"{% endif %}</p>
+    <a href="/ui/upload?target={{ path }}" class="btn btn-primary">Upload your first file</a>
 </div>
 {% endif %}
 {% endblock %}

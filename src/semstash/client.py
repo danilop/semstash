@@ -792,13 +792,14 @@ class SemStash:
         # Get content stats
         items, _ = self._content_storage.list_objects(max_keys=1000)  # type: ignore
         total_size = sum(i.file_size for i in items)
+        content_count = len(items)
 
-        # Get vector stats
-        vector_stats = self._vector_storage.get_stats()  # type: ignore
-
+        # Note: S3 Vectors API doesn't provide vector count.
+        # Since SemStash maintains 1:1 content-to-vector mapping,
+        # we use content_count as vector_count. Use check() for verified counts.
         return UsageStats(
-            content_count=len(items),
-            vector_count=vector_stats["vector_count"],
+            content_count=content_count,
+            vector_count=content_count,  # 1:1 mapping with content
             storage_bytes=total_size,
             dimension=self.config.dimension,
         )

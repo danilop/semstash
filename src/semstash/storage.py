@@ -800,8 +800,11 @@ class VectorStorage:
     def get_stats(self) -> dict[str, Any]:
         """Get index statistics.
 
+        Note: The S3 Vectors API does not provide a vector count.
+        Use list_all_keys() for accurate count (expensive for large indexes).
+
         Returns:
-            Dictionary with index stats including vector count.
+            Dictionary with index configuration (dimension, distance_metric).
 
         Raises:
             StorageError: If stats retrieval fails.
@@ -814,12 +817,8 @@ class VectorStorage:
             # Index details are nested under 'index' key
             index_info = response.get("index", {})
 
-            # Count vectors by listing them (API doesn't provide count metadata)
-            vector_count = len(self.list_all_keys()) if self._initialized else 0
-
             return {
                 "dimension": index_info.get("dimension", self.dimension),
-                "vector_count": vector_count,
                 "distance_metric": index_info.get("distanceMetric", "cosine"),
             }
         except ClientError as e:

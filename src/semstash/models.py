@@ -142,10 +142,17 @@ class InitResult(BaseModel):
 
 
 class UsageStats(BaseModel):
-    """Current usage statistics for the stash."""
+    """Current usage statistics for the stash.
+
+    Note: vector_count equals content_count since SemStash maintains
+    a 1:1 mapping between content items and vectors. The S3 Vectors API
+    does not provide a direct count; use check() for verified counts.
+    """
 
     content_count: int = Field(description="Number of content items stored")
-    vector_count: int = Field(description="Total vectors in S3 Vectors")
+    vector_count: int = Field(
+        description="Number of vectors (equals content_count; use check() for verified count)"
+    )
     storage_bytes: int = Field(description="Total bytes stored in S3")
     dimension: int = Field(description="Embedding dimension")
 

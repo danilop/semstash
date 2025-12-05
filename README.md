@@ -255,16 +255,16 @@ Each stash consists of two S3 buckets: one for content files and one for vector 
 
 ```mermaid
 flowchart LR
-    subgraph Content["Content Bucket (my-stash)"]
+    subgraph Content["Content Bucket<br/>(my-stash)"]
         C1[photo.jpg]
         C2[report.pdf]
         C3[notes.txt]
     end
 
-    subgraph Vectors["Vector Bucket (my-stash-vectors)"]
-        V1["photo.jpg → [0.12, 0.45, ...]"]
-        V2["report.pdf → [0.78, 0.23, ...]"]
-        V3["notes.txt → [0.56, 0.89, ...]"]
+    subgraph Vectors["Vector Bucket<br/>(my-stash-vectors)"]
+        V1["photo.jpg → [0.12, ...]"]
+        V2["report.pdf → [0.78, ...]"]
+        V3["notes.txt → [0.56, ...]"]
     end
 
     C1 -.-> V1

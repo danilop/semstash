@@ -43,7 +43,6 @@ from typing import Any
 
 from semstash.config import load_config
 from semstash.embeddings import EmbeddingGenerator, is_supported_content_type
-from semstash.models import ChunkType
 from semstash.exceptions import (
     AlreadyExistsError,
     BucketNotFoundError,
@@ -415,9 +414,11 @@ class SemStash:
             )
 
         # Generate embeddings (may produce multiple for multi-page documents)
+        # Pass bucket for async segmentation of large text/audio/video files
         file_embeddings = self._embedding_generator.embed_file_chunked(  # type: ignore
             file_path=file_path,
             content_type=actual_content_type,
+            s3_bucket=self.config.bucket,
         )
 
         # Build S3 metadata including chunk info for deletion support
@@ -1027,9 +1028,11 @@ class SemStash:
                         self._content_storage.download(key, Path(tmp.name))  # type: ignore
 
                         # Generate embeddings (may produce multiple for multi-page docs)
+                        # Pass bucket for async segmentation of large text/audio/video
                         file_embeddings = self._embedding_generator.embed_file_chunked(  # type: ignore
                             Path(tmp.name),
                             content_type=storage_metadata.content_type,
+                            s3_bucket=self.config.bucket,
                         )
 
                         # Build base metadata
@@ -1051,7 +1054,9 @@ class SemStash:
                             )
                         else:
                             # Multiple embeddings - use fragment keys
-                            vectors_to_store: list[tuple[str, list[float], dict[str, Any] | None]] = []
+                            vectors_to_store: list[
+                                tuple[str, list[float], dict[str, Any] | None]
+                            ] = []
                             for chunk in file_embeddings.chunks:
                                 chunk_key = make_chunk_key(key, chunk.chunk_id)
                                 chunk_metadata = {
@@ -1060,7 +1065,8 @@ class SemStash:
                                     "chunk_index": chunk.chunk_index,
                                     "total_chunks": chunk.total_chunks,
                                 }
-                                vectors_to_store.append((chunk_key, chunk.embedding, chunk_metadata))
+                                vec_data = (chunk_key, chunk.embedding, chunk_metadata)
+                                vectors_to_store.append(vec_data)
 
                             self._vector_storage.put_vectors_batch(vectors_to_store)  # type: ignore
 

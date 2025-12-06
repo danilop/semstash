@@ -346,6 +346,142 @@ class TestGetModality:
             gen.get_modality("application/octet-stream")
 
 
+class TestEmbedPdfPages:
+    """Tests for multi-page PDF embedding."""
+
+    def test_pdf_pages(self, mock_bedrock: MagicMock, tmp_path: Path) -> None:
+        """Generate embeddings for all PDF pages."""
+        import fitz
+
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        # Create a 3-page PDF
+        doc = fitz.open()
+        for i in range(3):
+            page = doc.new_page()
+            page.insert_text((50, 50), f"Page {i + 1} content")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        result = gen.embed_pdf_pages(pdf_bytes)
+
+        assert result.total_chunks == 3
+        assert all(chunk.chunk_type.value == "page" for chunk in result.chunks)
+        assert [chunk.chunk_index for chunk in result.chunks] == [1, 2, 3]
+        assert all(chunk.chunk_id.startswith("page=") for chunk in result.chunks)
+
+
+class TestEmbedPptxSlides:
+    """Tests for multi-slide PPTX embedding."""
+
+    def test_pptx_slides(self, mock_bedrock: MagicMock, tmp_path: Path) -> None:
+        """Generate embeddings for all PPTX slides."""
+        from pptx import Presentation
+
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        # Create a 2-slide presentation
+        prs = Presentation()
+        for i in range(2):
+            slide = prs.slides.add_slide(prs.slide_layouts[0])
+            title = slide.shapes.title
+            title.text = f"Slide {i + 1} Title"
+
+        pptx_file = tmp_path / "test.pptx"
+        prs.save(str(pptx_file))
+        pptx_data = pptx_file.read_bytes()
+
+        result = gen.embed_pptx_slides(pptx_data)
+
+        assert result.total_chunks == 2
+        assert all(chunk.chunk_type.value == "slide" for chunk in result.chunks)
+        assert [chunk.chunk_index for chunk in result.chunks] == [1, 2]
+
+
+class TestEmbedDocxPages:
+    """Tests for DOCX page-based embedding."""
+
+    def test_docx_pages(self, mock_bedrock: MagicMock, tmp_path: Path) -> None:
+        """Generate embeddings for DOCX document pages."""
+        import docx
+
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        # Create a DOCX with enough text to create multiple "pages"
+        doc = docx.Document()
+        for _ in range(5):
+            doc.add_paragraph("A" * 1000)  # ~1000 chars each, should create ~2 pages
+
+        docx_file = tmp_path / "test.docx"
+        doc.save(str(docx_file))
+        docx_data = docx_file.read_bytes()
+
+        result = gen.embed_docx_pages(docx_data, chars_per_page=2000)
+
+        assert result.total_chunks >= 2
+        assert all(chunk.chunk_type.value == "page" for chunk in result.chunks)
+
+
+class TestEmbedFileChunked:
+    """Tests for embed_file_chunked method."""
+
+    def test_pdf_returns_multiple_chunks(
+        self, mock_bedrock: MagicMock, tmp_path: Path
+    ) -> None:
+        """PDF file returns multiple page embeddings."""
+        import fitz
+
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        # Create a 2-page PDF
+        doc = fitz.open()
+        for i in range(2):
+            page = doc.new_page()
+            page.insert_text((50, 50), f"Page {i + 1}")
+        pdf_file = tmp_path / "test.pdf"
+        pdf_file.write_bytes(doc.tobytes())
+        doc.close()
+
+        result = gen.embed_file_chunked(pdf_file)
+
+        assert result.total_chunks == 2
+        assert not result.is_single_chunk
+        assert result.source_file == "test.pdf"
+
+    def test_small_text_returns_single_chunk(
+        self, mock_bedrock: MagicMock, sample_text_file: Path
+    ) -> None:
+        """Small text file returns single embedding."""
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        result = gen.embed_file_chunked(sample_text_file)
+
+        assert result.total_chunks == 1
+        assert result.is_single_chunk
+        assert result.chunks[0].chunk_type.value == "file"
+
+    def test_docx_returns_page_chunks(
+        self, mock_bedrock: MagicMock, tmp_path: Path
+    ) -> None:
+        """DOCX file returns page-based chunks."""
+        import docx
+
+        gen = EmbeddingGenerator(client=mock_bedrock)
+
+        # Create a DOCX with some content
+        doc = docx.Document()
+        doc.add_paragraph("Test paragraph with content.")
+
+        docx_file = tmp_path / "test.docx"
+        doc.save(str(docx_file))
+
+        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        result = gen.embed_file_chunked(docx_file, content_type=content_type)
+
+        assert result.total_chunks >= 1
+        assert result.source_file == "test.docx"
+
+
 class TestSupportedContentTypes:
     """Tests for content type utilities."""
 

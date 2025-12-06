@@ -21,6 +21,8 @@ import base64
 import io
 import json
 import mimetypes
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,17 +34,32 @@ from botocore.exceptions import ClientError
 from pptx import Presentation
 
 from semstash.config import (
+    ASYNC_POLL_INTERVAL_SECONDS,
+    ASYNC_POLL_MAX_INTERVAL_SECONDS,
+    ASYNC_POLL_TIMEOUT_SECONDS,
+    AUDIO_ASYNC_THRESHOLD_BYTES,
     DEFAULT_DIMENSION,
+    DEFAULT_MEDIA_SEGMENT_SECONDS,
     DEFAULT_REGION,
+    DEFAULT_TEXT_SEGMENT_CHARS,
+    MAX_TEXT_SEGMENT_CHARS,
+    MIN_MEDIA_SEGMENT_SECONDS,
+    MIN_TEXT_SEGMENT_CHARS,
     NOVA_EMBEDDINGS_MODEL,
     SUPPORTED_DIMENSIONS,
+    TEXT_ASYNC_THRESHOLD_BYTES,
+    VIDEO_ASYNC_THRESHOLD_BYTES,
 )
 from semstash.exceptions import (
     DimensionError,
     EmbeddingError,
     UnsupportedContentTypeError,
 )
-from semstash.models import ChunkEmbedding, ChunkType, FileEmbeddings
+from semstash.models import (
+    ChunkEmbedding,
+    ChunkType,
+    FileEmbeddings,
+)
 
 # Content type to modality mapping
 MODALITY_MAP = {
@@ -514,6 +531,90 @@ class EmbeddingGenerator:
         except Exception as e:
             raise EmbeddingError(f"Failed to embed PPTX slides: {e}") from e
 
+    def embed_docx_pages(
+        self,
+        docx_data: bytes,
+        chars_per_page: int = 3000,
+    ) -> FileEmbeddings:
+        """Generate embeddings for DOCX document by logical pages.
+
+        Since DOCX doesn't have physical pages like PDF, this method groups
+        paragraphs into page-like chunks based on character count.
+        Each chunk is embedded separately for better semantic coverage.
+
+        Args:
+            docx_data: Raw DOCX bytes.
+            chars_per_page: Approximate characters per logical page (default 3000).
+
+        Returns:
+            FileEmbeddings containing one ChunkEmbedding per logical page.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+
+        Example:
+            result = generator.embed_docx_pages(docx_bytes)
+            print(f"Generated {result.total_chunks} page embeddings")
+            for chunk in result.chunks:
+                print(f"  Page {chunk.chunk_index}: {len(chunk.embedding)} dims")
+        """
+        try:
+            doc = docx.Document(io.BytesIO(docx_data))
+
+            # Extract all paragraphs with text
+            paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+
+            if not paragraphs:
+                raise EmbeddingError("Document contains no text")
+
+            # Group paragraphs into logical pages
+            pages: list[str] = []
+            current_page: list[str] = []
+            current_chars = 0
+
+            for para in paragraphs:
+                para_len = len(para)
+
+                # If adding this paragraph exceeds the limit, start a new page
+                if current_chars + para_len > chars_per_page and current_page:
+                    pages.append("\n\n".join(current_page))
+                    current_page = [para]
+                    current_chars = para_len
+                else:
+                    current_page.append(para)
+                    current_chars += para_len
+
+            # Don't forget the last page
+            if current_page:
+                pages.append("\n\n".join(current_page))
+
+            # Generate embeddings for each page
+            total_pages = len(pages)
+            chunks: list[ChunkEmbedding] = []
+
+            for page_num, page_text in enumerate(pages, 1):
+                embedding = self.embed_text(page_text)
+
+                chunks.append(
+                    ChunkEmbedding(
+                        chunk_type=ChunkType.PAGE,
+                        chunk_index=page_num,
+                        total_chunks=total_pages,
+                        embedding=embedding,
+                    )
+                )
+
+            return FileEmbeddings(
+                source_file="",  # Will be set by caller
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                chunks=chunks,
+            )
+
+        except EmbeddingError:
+            raise
+        except Exception as e:
+            raise EmbeddingError(f"Failed to embed DOCX pages: {e}") from e
+
     def embed_spreadsheet(self, spreadsheet_data: bytes) -> list[float]:
         """Generate embedding for spreadsheet content (XLSX).
 
@@ -602,18 +703,27 @@ class EmbeddingGenerator:
         )
 
     def embed_file_chunked(
-        self, file_path: Path, content_type: str | None = None
+        self,
+        file_path: Path,
+        content_type: str | None = None,
+        s3_bucket: str | None = None,
+        use_async: bool = True,
     ) -> FileEmbeddings:
         """Generate embeddings for a file with chunking support.
 
         Uses chunking for multi-page/multi-slide documents:
         - PDF: One embedding per page (DOCUMENT_IMAGE detail level)
         - PPTX: One embedding per slide (text extraction)
+        - DOCX: One embedding per page (rendered to images)
+        - Large text: Segmented via Nova Async API (if s3_bucket provided)
+        - Large audio/video: Segmented via Nova Async API (if s3_bucket provided)
         - Other types: Single embedding wrapped in FileEmbeddings
 
         Args:
             file_path: Path to the file.
             content_type: Optional MIME type (auto-detected if None).
+            s3_bucket: S3 bucket for async operations (required for large file segmentation).
+            use_async: Whether to use async API for large files (default True).
 
         Returns:
             FileEmbeddings containing one or more ChunkEmbedding objects.
@@ -624,7 +734,15 @@ class EmbeddingGenerator:
             FileNotFoundError: If file doesn't exist.
 
         Example:
+            # Basic usage - auto-detect chunking strategy
             result = generator.embed_file_chunked(Path("report.pdf"))
+
+            # With async segmentation for large files
+            result = generator.embed_file_chunked(
+                Path("long_document.txt"),
+                s3_bucket="my-bucket",
+            )
+
             if result.is_single_chunk:
                 print("Single embedding generated")
             else:
@@ -638,24 +756,56 @@ class EmbeddingGenerator:
             content_type = content_type or "application/octet-stream"
 
         modality = self.get_modality(content_type)
-        file_data = file_path.read_bytes() if modality != "text" else None
+        file_size = file_path.stat().st_size
 
         # Content types that support chunking
         pptx_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        docx_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
         # PDF: Embed all pages
         if modality == "pdf":
-            assert file_data is not None
+            file_data = file_path.read_bytes()
             result = self.embed_pdf_pages(file_data)
             result.source_file = file_path.name
             return result
 
         # PPTX: Embed all slides
         if content_type == pptx_type:
-            assert file_data is not None
+            file_data = file_path.read_bytes()
             result = self.embed_pptx_slides(file_data)
             result.source_file = file_path.name
             return result
+
+        # DOCX: Render to pages and embed each page
+        if content_type == docx_type:
+            file_data = file_path.read_bytes()
+            result = self.embed_docx_pages(file_data)
+            result.source_file = file_path.name
+            return result
+
+        # Large text: Use async segmentation if bucket provided
+        is_large_text = file_size > TEXT_ASYNC_THRESHOLD_BYTES
+        if modality == "text" and use_async and s3_bucket and is_large_text:
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+            return self.embed_text_segmented(
+                text, s3_bucket, source_file=file_path.name
+            )
+
+        # Large audio: Use async segmentation if bucket provided
+        is_large_audio = file_size > AUDIO_ASYNC_THRESHOLD_BYTES
+        if modality == "audio" and use_async and s3_bucket and is_large_audio:
+            audio_data = file_path.read_bytes()
+            return self.embed_audio_segmented(
+                audio_data, content_type, s3_bucket, source_file=file_path.name
+            )
+
+        # Large video: Use async segmentation if bucket provided
+        is_large_video = file_size > VIDEO_ASYNC_THRESHOLD_BYTES
+        if modality == "video" and use_async and s3_bucket and is_large_video:
+            video_data = file_path.read_bytes()
+            return self.embed_video_segmented(
+                video_data, content_type, s3_bucket, source_file=file_path.name
+            )
 
         # All other types: Single embedding wrapped in FileEmbeddings
         embedding = self.embed_file(file_path, content_type)
@@ -758,6 +908,495 @@ class EmbeddingGenerator:
 
         except json.JSONDecodeError as e:
             raise EmbeddingError(f"Invalid model response: {e}") from e
+
+    # -------------------------------------------------------------------------
+    # Nova Async API - Segmented Embeddings
+    # -------------------------------------------------------------------------
+
+    def _get_s3_client(self) -> Any:
+        """Get or create S3 client for async operations."""
+        if not hasattr(self, "_s3_client"):
+            self._s3_client = boto3.client("s3", region_name=self.region)
+        return self._s3_client
+
+    def _start_async_invoke(
+        self,
+        input_s3_uri: str,
+        output_s3_uri: str,
+        modality: str,
+        segment_config: dict[str, Any],
+    ) -> str:
+        """Start an async embedding job via Nova API.
+
+        Args:
+            input_s3_uri: S3 URI for input content.
+            output_s3_uri: S3 URI prefix for output.
+            modality: Content modality ("text", "audio", "video").
+            segment_config: Segmentation configuration.
+
+        Returns:
+            Job ID from Nova.
+
+        Raises:
+            EmbeddingError: If job submission fails.
+        """
+        request_body: dict[str, Any] = {
+            "taskType": "SEGMENTED_EMBEDDING",
+            "segmentedEmbeddingParams": {
+                "embeddingPurpose": "GENERIC_INDEX",
+                "embeddingDimension": self.dimension,
+                "segmentationConfig": segment_config,
+                modality: {"source": {"s3Uri": input_s3_uri}},
+            },
+        }
+
+        try:
+            response = self.client.start_async_invoke(
+                modelId=NOVA_EMBEDDINGS_MODEL,
+                modelInput=request_body,
+                outputDataConfig={"s3OutputDataConfig": {"s3Uri": output_s3_uri}},
+            )
+            return str(response["invocationArn"])
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_msg = e.response.get("Error", {}).get("Message", str(e))
+            raise EmbeddingError(f"Failed to start async job ({error_code}): {error_msg}") from e
+
+    def _poll_async_invoke(self, invocation_arn: str) -> tuple[str, str]:
+        """Poll for async job completion.
+
+        Args:
+            invocation_arn: The invocation ARN from start_async_invoke.
+
+        Returns:
+            Tuple of (status, output_s3_uri or error_message).
+
+        Raises:
+            EmbeddingError: If polling fails.
+        """
+        try:
+            response = self.client.get_async_invoke(invocationArn=invocation_arn)
+            status = response.get("status", "Unknown")
+
+            if status == "Completed":
+                output_config = response.get("outputDataConfig", {})
+                s3_config = output_config.get("s3OutputDataConfig", {})
+                output_uri = s3_config.get("s3Uri", "")
+                return ("Completed", output_uri)
+            elif status == "Failed":
+                failure_msg = response.get("failureMessage", "Unknown error")
+                return ("Failed", failure_msg)
+            else:
+                return (status, "")
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_msg = e.response.get("Error", {}).get("Message", str(e))
+            raise EmbeddingError(f"Failed to poll async job ({error_code}): {error_msg}") from e
+
+    def _parse_s3_uri(self, s3_uri: str) -> tuple[str, str]:
+        """Parse S3 URI into bucket and key.
+
+        Args:
+            s3_uri: S3 URI like 's3://bucket/key'.
+
+        Returns:
+            Tuple of (bucket, key).
+        """
+        if not s3_uri.startswith("s3://"):
+            raise ValueError(f"Invalid S3 URI: {s3_uri}")
+        path = s3_uri[5:]  # Remove 's3://'
+        bucket, _, key = path.partition("/")
+        return (bucket, key)
+
+    def _read_async_output(self, output_s3_uri: str) -> list[dict[str, Any]]:
+        """Read and parse JSONL output from async job.
+
+        Args:
+            output_s3_uri: S3 URI for output directory.
+
+        Returns:
+            List of embedding result dictionaries.
+
+        Raises:
+            EmbeddingError: If reading or parsing fails.
+        """
+        try:
+            s3 = self._get_s3_client()
+            bucket, prefix = self._parse_s3_uri(output_s3_uri)
+
+            # List objects in output prefix to find the JSONL file
+            response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+            contents = response.get("Contents", [])
+
+            if not contents:
+                raise EmbeddingError(f"No output files found at {output_s3_uri}")
+
+            # Find the output JSONL file (usually named output.jsonl or similar)
+            jsonl_key = None
+            for obj in contents:
+                if obj["Key"].endswith(".jsonl") or obj["Key"].endswith(".json"):
+                    jsonl_key = obj["Key"]
+                    break
+
+            if not jsonl_key:
+                # If no .jsonl, try the first file
+                jsonl_key = contents[0]["Key"]
+
+            # Read and parse the file
+            obj_response = s3.get_object(Bucket=bucket, Key=jsonl_key)
+            body = obj_response["Body"].read().decode("utf-8")
+
+            results = []
+            for line in body.strip().split("\n"):
+                if line.strip():
+                    results.append(json.loads(line))
+
+            return results
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_msg = e.response.get("Error", {}).get("Message", str(e))
+            raise EmbeddingError(f"Failed to read async output ({error_code}): {error_msg}") from e
+        except json.JSONDecodeError as e:
+            raise EmbeddingError(f"Failed to parse async output: {e}") from e
+
+    def embed_text_segmented(
+        self,
+        text: str,
+        s3_bucket: str,
+        s3_prefix: str = ".semstash/async/",
+        segment_chars: int = DEFAULT_TEXT_SEGMENT_CHARS,
+        source_file: str = "",
+    ) -> FileEmbeddings:
+        """Generate segmented embeddings for text using Nova Async API.
+
+        Uses Nova's native text segmentation to create multiple embeddings
+        for long text content. Each segment is embedded separately, providing
+        better semantic coverage than truncation.
+
+        Args:
+            text: Text content to embed.
+            s3_bucket: S3 bucket for temporary input/output.
+            s3_prefix: Prefix for temporary files (default: .semstash/async/).
+            segment_chars: Max characters per segment (300-50000).
+            source_file: Original filename for result metadata.
+
+        Returns:
+            FileEmbeddings with one ChunkEmbedding per segment.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+            ValueError: If segment_chars is out of range.
+
+        Example:
+            result = generator.embed_text_segmented(
+                long_text,
+                s3_bucket="my-bucket",
+                segment_chars=5000,
+            )
+            print(f"Generated {result.total_chunks} segment embeddings")
+        """
+        if segment_chars < MIN_TEXT_SEGMENT_CHARS or segment_chars > MAX_TEXT_SEGMENT_CHARS:
+            raise ValueError(
+                f"segment_chars must be {MIN_TEXT_SEGMENT_CHARS}-{MAX_TEXT_SEGMENT_CHARS}, "
+                f"got {segment_chars}"
+            )
+
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())[:8]
+        input_key = f"{s3_prefix.rstrip('/')}/input/{job_id}.txt"
+        output_prefix = f"{s3_prefix.rstrip('/')}/output/{job_id}/"
+
+        try:
+            # Upload text to S3
+            s3 = self._get_s3_client()
+            s3.put_object(Bucket=s3_bucket, Key=input_key, Body=text.encode("utf-8"))
+
+            input_s3_uri = f"s3://{s3_bucket}/{input_key}"
+            output_s3_uri = f"s3://{s3_bucket}/{output_prefix}"
+
+            # Start async job
+            segment_config = {"maxLengthChars": segment_chars}
+            invocation_arn = self._start_async_invoke(
+                input_s3_uri, output_s3_uri, "text", segment_config
+            )
+
+            # Poll for completion with exponential backoff
+            interval = ASYNC_POLL_INTERVAL_SECONDS
+            elapsed = 0.0
+
+            while elapsed < ASYNC_POLL_TIMEOUT_SECONDS:
+                time.sleep(interval)
+                elapsed += interval
+
+                status, result = self._poll_async_invoke(invocation_arn)
+
+                if status == "Completed":
+                    # Parse results
+                    raw_results = self._read_async_output(result)
+                    return self._parse_segmented_results(
+                        raw_results, ChunkType.CHUNK, "text/plain", source_file
+                    )
+                elif status == "Failed":
+                    raise EmbeddingError(f"Async job failed: {result}")
+
+                # Exponential backoff
+                interval = min(interval * 1.5, ASYNC_POLL_MAX_INTERVAL_SECONDS)
+
+            raise EmbeddingError(f"Async job timed out after {ASYNC_POLL_TIMEOUT_SECONDS}s")
+
+        finally:
+            # Cleanup temporary files
+            try:
+                s3 = self._get_s3_client()
+                s3.delete_object(Bucket=s3_bucket, Key=input_key)
+                # List and delete output files
+                response = s3.list_objects_v2(Bucket=s3_bucket, Prefix=output_prefix)
+                for obj in response.get("Contents", []):
+                    s3.delete_object(Bucket=s3_bucket, Key=obj["Key"])
+            except Exception:
+                pass  # Best effort cleanup
+
+    def embed_audio_segmented(
+        self,
+        audio_data: bytes,
+        content_type: str,
+        s3_bucket: str,
+        s3_prefix: str = ".semstash/async/",
+        segment_seconds: int = DEFAULT_MEDIA_SEGMENT_SECONDS,
+        source_file: str = "",
+    ) -> FileEmbeddings:
+        """Generate segmented embeddings for audio using Nova Async API.
+
+        Uses Nova's native audio segmentation to create multiple embeddings
+        for long audio content. Each segment covers a time window.
+
+        Args:
+            audio_data: Raw audio bytes.
+            content_type: MIME type of audio.
+            s3_bucket: S3 bucket for temporary input/output.
+            s3_prefix: Prefix for temporary files.
+            segment_seconds: Duration per segment in seconds (min 5).
+            source_file: Original filename for result metadata.
+
+        Returns:
+            FileEmbeddings with one ChunkEmbedding per time segment.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+            ValueError: If segment_seconds is below minimum.
+
+        Example:
+            result = generator.embed_audio_segmented(
+                audio_bytes,
+                "audio/mp3",
+                s3_bucket="my-bucket",
+                segment_seconds=30,
+            )
+            print(f"Generated {result.total_chunks} audio segment embeddings")
+        """
+        if segment_seconds < MIN_MEDIA_SEGMENT_SECONDS:
+            raise ValueError(
+                f"segment_seconds must be >= {MIN_MEDIA_SEGMENT_SECONDS}, got {segment_seconds}"
+            )
+
+        audio_format = AUDIO_FORMAT_MAP.get(content_type, "mp3")
+        job_id = str(uuid.uuid4())[:8]
+        input_key = f"{s3_prefix.rstrip('/')}/input/{job_id}.{audio_format}"
+        output_prefix = f"{s3_prefix.rstrip('/')}/output/{job_id}/"
+
+        try:
+            # Upload audio to S3
+            s3 = self._get_s3_client()
+            s3.put_object(Bucket=s3_bucket, Key=input_key, Body=audio_data)
+
+            input_s3_uri = f"s3://{s3_bucket}/{input_key}"
+            output_s3_uri = f"s3://{s3_bucket}/{output_prefix}"
+
+            # Start async job with audio-specific config
+            segment_config = {"durationSeconds": segment_seconds}
+            invocation_arn = self._start_async_invoke(
+                input_s3_uri, output_s3_uri, "audio", segment_config
+            )
+
+            # Poll for completion
+            interval = ASYNC_POLL_INTERVAL_SECONDS
+            elapsed = 0.0
+
+            while elapsed < ASYNC_POLL_TIMEOUT_SECONDS:
+                time.sleep(interval)
+                elapsed += interval
+
+                status, result = self._poll_async_invoke(invocation_arn)
+
+                if status == "Completed":
+                    raw_results = self._read_async_output(result)
+                    return self._parse_segmented_results(
+                        raw_results, ChunkType.SEGMENT, content_type, source_file
+                    )
+                elif status == "Failed":
+                    raise EmbeddingError(f"Async job failed: {result}")
+
+                interval = min(interval * 1.5, ASYNC_POLL_MAX_INTERVAL_SECONDS)
+
+            raise EmbeddingError(f"Async job timed out after {ASYNC_POLL_TIMEOUT_SECONDS}s")
+
+        finally:
+            # Cleanup
+            try:
+                s3 = self._get_s3_client()
+                s3.delete_object(Bucket=s3_bucket, Key=input_key)
+                response = s3.list_objects_v2(Bucket=s3_bucket, Prefix=output_prefix)
+                for obj in response.get("Contents", []):
+                    s3.delete_object(Bucket=s3_bucket, Key=obj["Key"])
+            except Exception:
+                pass
+
+    def embed_video_segmented(
+        self,
+        video_data: bytes,
+        content_type: str,
+        s3_bucket: str,
+        s3_prefix: str = ".semstash/async/",
+        segment_seconds: int = DEFAULT_MEDIA_SEGMENT_SECONDS,
+        source_file: str = "",
+    ) -> FileEmbeddings:
+        """Generate segmented embeddings for video using Nova Async API.
+
+        Uses Nova's native video segmentation to create multiple embeddings
+        for long video content. Each segment covers a time window and includes
+        both audio and visual information.
+
+        Args:
+            video_data: Raw video bytes.
+            content_type: MIME type of video.
+            s3_bucket: S3 bucket for temporary input/output.
+            s3_prefix: Prefix for temporary files.
+            segment_seconds: Duration per segment in seconds (min 5).
+            source_file: Original filename for result metadata.
+
+        Returns:
+            FileEmbeddings with one ChunkEmbedding per time segment.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+            ValueError: If segment_seconds is below minimum.
+
+        Example:
+            result = generator.embed_video_segmented(
+                video_bytes,
+                "video/mp4",
+                s3_bucket="my-bucket",
+                segment_seconds=60,
+            )
+            print(f"Generated {result.total_chunks} video segment embeddings")
+        """
+        if segment_seconds < MIN_MEDIA_SEGMENT_SECONDS:
+            raise ValueError(
+                f"segment_seconds must be >= {MIN_MEDIA_SEGMENT_SECONDS}, got {segment_seconds}"
+            )
+
+        video_format = VIDEO_FORMAT_MAP.get(content_type, "mp4")
+        job_id = str(uuid.uuid4())[:8]
+        input_key = f"{s3_prefix.rstrip('/')}/input/{job_id}.{video_format}"
+        output_prefix = f"{s3_prefix.rstrip('/')}/output/{job_id}/"
+
+        try:
+            # Upload video to S3
+            s3 = self._get_s3_client()
+            s3.put_object(Bucket=s3_bucket, Key=input_key, Body=video_data)
+
+            input_s3_uri = f"s3://{s3_bucket}/{input_key}"
+            output_s3_uri = f"s3://{s3_bucket}/{output_prefix}"
+
+            # Start async job with video-specific config
+            segment_config = {"durationSeconds": segment_seconds}
+            invocation_arn = self._start_async_invoke(
+                input_s3_uri, output_s3_uri, "video", segment_config
+            )
+
+            # Poll for completion
+            interval = ASYNC_POLL_INTERVAL_SECONDS
+            elapsed = 0.0
+
+            while elapsed < ASYNC_POLL_TIMEOUT_SECONDS:
+                time.sleep(interval)
+                elapsed += interval
+
+                status, result = self._poll_async_invoke(invocation_arn)
+
+                if status == "Completed":
+                    raw_results = self._read_async_output(result)
+                    return self._parse_segmented_results(
+                        raw_results, ChunkType.SEGMENT, content_type, source_file
+                    )
+                elif status == "Failed":
+                    raise EmbeddingError(f"Async job failed: {result}")
+
+                interval = min(interval * 1.5, ASYNC_POLL_MAX_INTERVAL_SECONDS)
+
+            raise EmbeddingError(f"Async job timed out after {ASYNC_POLL_TIMEOUT_SECONDS}s")
+
+        finally:
+            # Cleanup
+            try:
+                s3 = self._get_s3_client()
+                s3.delete_object(Bucket=s3_bucket, Key=input_key)
+                response = s3.list_objects_v2(Bucket=s3_bucket, Prefix=output_prefix)
+                for obj in response.get("Contents", []):
+                    s3.delete_object(Bucket=s3_bucket, Key=obj["Key"])
+            except Exception:
+                pass
+
+    def _parse_segmented_results(
+        self,
+        raw_results: list[dict[str, Any]],
+        chunk_type: ChunkType,
+        content_type: str,
+        source_file: str,
+    ) -> FileEmbeddings:
+        """Parse raw segmented embedding results into FileEmbeddings.
+
+        Args:
+            raw_results: List of result dicts from JSONL output.
+            chunk_type: Type of chunks (CHUNK for text, SEGMENT for audio/video).
+            content_type: MIME type of source content.
+            source_file: Original filename.
+
+        Returns:
+            FileEmbeddings with parsed ChunkEmbedding objects.
+        """
+        if not raw_results:
+            raise EmbeddingError("No embedding results returned")
+
+        total_chunks = len(raw_results)
+        chunks: list[ChunkEmbedding] = []
+
+        for i, result in enumerate(raw_results, 1):
+            # Extract embedding from result
+            # Nova async output format: {"embeddings": [{"embedding": [...]}]}
+            embeddings_data = result.get("embeddings", [])
+            if not embeddings_data:
+                raise EmbeddingError(f"No embeddings in result {i}")
+
+            embedding = embeddings_data[0].get("embedding")
+            if not embedding:
+                raise EmbeddingError(f"No embedding vector in result {i}")
+
+            chunks.append(
+                ChunkEmbedding(
+                    chunk_type=chunk_type,
+                    chunk_index=i,
+                    total_chunks=total_chunks,
+                    embedding=embedding,
+                )
+            )
+
+        return FileEmbeddings(
+            source_file=source_file,
+            content_type=content_type,
+            chunks=chunks,
+        )
 
 
 def get_supported_content_types() -> list[str]:

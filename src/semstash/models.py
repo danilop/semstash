@@ -107,6 +107,45 @@ class FileEmbeddings(BaseModel):
         return len(self.chunks) == 1 and self.chunks[0].chunk_type == ChunkType.FILE
 
 
+class AsyncJobStatus(str, Enum):
+    """Status of an async embedding job."""
+
+    PENDING = "pending"  # Job submitted, not yet started
+    IN_PROGRESS = "in_progress"  # Job is running
+    COMPLETED = "completed"  # Job finished successfully
+    FAILED = "failed"  # Job failed
+
+
+class AsyncJobResult(BaseModel):
+    """Result of an async embedding job.
+
+    Tracks the state of a Nova Async API job for segmented embeddings.
+
+    Example:
+        job = generator.start_text_segmented_job(text, s3_prefix)
+        while not job.is_terminal:
+            job = generator.poll_async_job(job)
+            time.sleep(2)
+        if job.status == AsyncJobStatus.COMPLETED:
+            embeddings = generator.get_async_results(job)
+    """
+
+    job_id: str = Field(description="Unique job identifier from Nova")
+    status: AsyncJobStatus = Field(description="Current job status")
+    input_s3_uri: str = Field(description="S3 URI where input was uploaded")
+    output_s3_uri: str = Field(default="", description="S3 URI for output (set on completion)")
+    source_file: str = Field(default="", description="Original filename")
+    content_type: str = Field(default="", description="MIME type of source content")
+    segment_type: ChunkType = Field(default=ChunkType.SEGMENT, description="Type of segments")
+    error_message: str = Field(default="", description="Error message if failed")
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether job has reached a terminal state."""
+        return self.status in (AsyncJobStatus.COMPLETED, AsyncJobStatus.FAILED)
+
+
 class StashConfig(BaseModel):
     """Configuration stored in the stash's S3 bucket.
 

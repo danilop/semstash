@@ -691,7 +691,10 @@ def extract_folders_and_files(path: str, items: list[StorageItem]) -> list[UIBro
             folder_name = relative.split("/")[0]
             if folder_name not in seen_folders:
                 seen_folders.add(folder_name)
-                folder_path = f"{path.rstrip('/')}/{folder_name}/" if path != "/" else f"/{folder_name}/"
+                if path != "/":
+                    folder_path = f"{path.rstrip('/')}/{folder_name}/"
+                else:
+                    folder_path = f"/{folder_name}/"
                 result.append(
                     UIBrowseItem(
                         name=folder_name,

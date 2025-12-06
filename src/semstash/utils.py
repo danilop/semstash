@@ -190,10 +190,7 @@ def generate_breadcrumbs(path: str) -> list[tuple[str, str]]:
         # Add trailing / for directories (all except possibly the last part)
         is_last = i == len(parts) - 1
         is_folder = path.endswith("/") or not is_last
-        if is_folder and not current.endswith("/"):
-            display_path = current + "/"
-        else:
-            display_path = current
+        display_path = current + "/" if is_folder and not current.endswith("/") else current
         breadcrumbs.append((part, display_path))
 
     return breadcrumbs

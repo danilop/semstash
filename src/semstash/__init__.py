@@ -65,6 +65,8 @@ from semstash.exceptions import (
 
 # Models
 from semstash.models import (
+    AsyncJobResult,
+    AsyncJobStatus,
     BrowseResult,
     CheckResult,
     ChunkEmbedding,
@@ -110,6 +112,8 @@ __all__ = [
     "ChunkType",
     "ChunkEmbedding",
     "FileEmbeddings",
+    "AsyncJobStatus",
+    "AsyncJobResult",
     "StashConfig",
     "StorageItem",
     "SearchResult",

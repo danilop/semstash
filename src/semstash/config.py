@@ -41,6 +41,27 @@ DEFAULT_PRESIGNED_URL_EXPIRY = 3600  # 1 hour in seconds
 DEFAULT_SEARCH_TOP_K = 10
 DEFAULT_BROWSE_LIMIT = 20
 
+# Nova Async API - Segmented Embedding Configuration
+# Text segmentation: max characters per segment (Nova limit: 300 chars min, 50000 max)
+DEFAULT_TEXT_SEGMENT_CHARS = 10000  # 10K chars per segment (good for semantic chunks)
+MAX_TEXT_SEGMENT_CHARS = 50000  # Nova's maximum
+MIN_TEXT_SEGMENT_CHARS = 300  # Nova's minimum
+
+# Audio/Video segmentation: duration per segment in seconds (Nova limit: 5s min)
+DEFAULT_MEDIA_SEGMENT_SECONDS = 60  # 1 minute per segment
+MIN_MEDIA_SEGMENT_SECONDS = 5  # Nova's minimum
+
+# Async job polling configuration
+ASYNC_POLL_INTERVAL_SECONDS = 2.0  # Initial poll interval
+ASYNC_POLL_MAX_INTERVAL_SECONDS = 10.0  # Maximum poll interval (with backoff)
+ASYNC_POLL_TIMEOUT_SECONDS = 600  # 10 minute timeout for async jobs
+
+# Size thresholds for using async vs sync API
+# Files larger than these use async segmentation for better semantic coverage
+TEXT_ASYNC_THRESHOLD_BYTES = 50000  # 50KB text -> use async segmentation
+AUDIO_ASYNC_THRESHOLD_BYTES = 5 * 1024 * 1024  # 5MB audio -> use async segmentation
+VIDEO_ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10MB video -> use async segmentation
+
 
 class Config(BaseSettings):
     """semstash configuration.

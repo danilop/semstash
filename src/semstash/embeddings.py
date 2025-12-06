@@ -5,9 +5,16 @@ Supports configurable dimensions (256, 384, 1024, 3072).
 
 Document support:
 - PDF: Rendered to image using PyMuPDF, embedded with DOCUMENT_IMAGE detail level
+  - Multi-page: Each page rendered and embedded separately
 - DOCX: Text extracted using python-docx, embedded as text
 - PPTX: Text extracted using python-pptx, embedded as text
+  - Multi-slide: Each slide extracted and embedded separately
 - XLSX: Converted to CSV text using openpyxl, embedded as text
+
+Chunking support:
+- PDF: One embedding per page (DOCUMENT_IMAGE detail level)
+- PPTX: One embedding per slide (text extraction)
+- Text/DOCX/XLSX: Single embedding with truncation (async segmentation planned)
 """
 
 import base64
@@ -35,6 +42,7 @@ from semstash.exceptions import (
     EmbeddingError,
     UnsupportedContentTypeError,
 )
+from semstash.models import ChunkEmbedding, ChunkType, FileEmbeddings
 
 # Content type to modality mapping
 MODALITY_MAP = {
@@ -240,11 +248,13 @@ class EmbeddingGenerator:
         return self._invoke_model(request)
 
     def embed_pdf(self, pdf_data: bytes) -> list[float]:
-        """Generate embedding for PDF content.
+        """Generate embedding for PDF content (first page only).
 
         Uses PyMuPDF to render PDF pages to images, then embeds with
         the Nova DOCUMENT_IMAGE detail level for better text interpretation.
-        For multi-page documents, embeds the first page.
+        For multi-page documents, embeds the first page only.
+
+        For multi-page support, use embed_pdf_pages() instead.
 
         Args:
             pdf_data: Raw PDF bytes.
@@ -268,6 +278,19 @@ class EmbeddingGenerator:
         except Exception as e:
             raise EmbeddingError(f"Failed to render PDF to image: {e}") from e
 
+        return self._embed_document_image(image_data)
+
+    def _embed_document_image(self, image_data: bytes) -> list[float]:
+        """Generate embedding for a document image (internal helper).
+
+        Uses DOCUMENT_IMAGE detail level for better text interpretation.
+
+        Args:
+            image_data: PNG image bytes.
+
+        Returns:
+            Embedding vector as list of floats.
+        """
         request = self._build_request(
             {
                 "image": {
@@ -278,6 +301,65 @@ class EmbeddingGenerator:
             }
         )
         return self._invoke_model(request)
+
+    def embed_pdf_pages(self, pdf_data: bytes) -> FileEmbeddings:
+        """Generate embeddings for all PDF pages.
+
+        Renders each page to an image and generates a separate embedding
+        using DOCUMENT_IMAGE detail level for optimal text recognition.
+
+        Args:
+            pdf_data: Raw PDF bytes.
+
+        Returns:
+            FileEmbeddings containing one ChunkEmbedding per page.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+
+        Example:
+            result = generator.embed_pdf_pages(pdf_bytes)
+            print(f"Generated {result.total_chunks} page embeddings")
+            for chunk in result.chunks:
+                print(f"  Page {chunk.chunk_index}: {len(chunk.embedding)} dims")
+        """
+        try:
+            doc = fitz.open(stream=pdf_data, filetype="pdf")
+            if doc.page_count == 0:
+                raise EmbeddingError("PDF has no pages")
+
+            total_pages = doc.page_count
+            chunks: list[ChunkEmbedding] = []
+
+            for page_num in range(total_pages):
+                # Render page to PNG at 2x resolution for better text recognition
+                pix = doc[page_num].get_pixmap(matrix=fitz.Matrix(2, 2))
+                image_data = pix.tobytes("png")
+
+                # Generate embedding for this page
+                embedding = self._embed_document_image(image_data)
+
+                chunks.append(
+                    ChunkEmbedding(
+                        chunk_type=ChunkType.PAGE,
+                        chunk_index=page_num + 1,  # 1-indexed
+                        total_chunks=total_pages,
+                        embedding=embedding,
+                    )
+                )
+
+            doc.close()
+
+            return FileEmbeddings(
+                source_file="",  # Will be set by caller
+                content_type="application/pdf",
+                chunks=chunks,
+            )
+
+        except EmbeddingError:
+            raise
+        except Exception as e:
+            raise EmbeddingError(f"Failed to embed PDF pages: {e}") from e
 
     def embed_office(self, office_data: bytes, content_type: str) -> list[float]:
         """Generate embedding for Office document content (DOCX, PPTX).
@@ -353,6 +435,84 @@ class EmbeddingGenerator:
                 text_parts.extend(slide_text)
 
         return "\n".join(text_parts)
+
+    def _extract_slide_text(self, slide: Any) -> str:
+        """Extract text from a single PPTX slide.
+
+        Args:
+            slide: A python-pptx Slide object.
+
+        Returns:
+            Extracted text content from the slide.
+        """
+        text_parts = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                text_parts.append(shape.text)
+        return "\n".join(text_parts)
+
+    def embed_pptx_slides(self, pptx_data: bytes) -> FileEmbeddings:
+        """Generate embeddings for all PPTX slides.
+
+        Extracts text from each slide and generates a separate embedding.
+        Slides with no text content are skipped.
+
+        Args:
+            pptx_data: Raw PPTX bytes.
+
+        Returns:
+            FileEmbeddings containing one ChunkEmbedding per slide with text.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+
+        Example:
+            result = generator.embed_pptx_slides(pptx_bytes)
+            print(f"Generated {result.total_chunks} slide embeddings")
+            for chunk in result.chunks:
+                print(f"  Slide {chunk.chunk_index}: {len(chunk.embedding)} dims")
+        """
+        try:
+            prs = Presentation(io.BytesIO(pptx_data))
+            total_slides = len(prs.slides)
+
+            if total_slides == 0:
+                raise EmbeddingError("Presentation has no slides")
+
+            chunks: list[ChunkEmbedding] = []
+
+            for slide_num, slide in enumerate(prs.slides, 1):
+                slide_text = self._extract_slide_text(slide)
+
+                # Skip slides with no text content
+                if not slide_text.strip():
+                    continue
+
+                # Generate embedding for this slide's text
+                embedding = self.embed_text(slide_text)
+
+                chunks.append(
+                    ChunkEmbedding(
+                        chunk_type=ChunkType.SLIDE,
+                        chunk_index=slide_num,  # 1-indexed, preserves original slide number
+                        total_chunks=total_slides,
+                        embedding=embedding,
+                    )
+                )
+
+            if not chunks:
+                raise EmbeddingError("Presentation contains no text content")
+
+            return FileEmbeddings(
+                source_file="",  # Will be set by caller
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                chunks=chunks,
+            )
+
+        except EmbeddingError:
+            raise
+        except Exception as e:
+            raise EmbeddingError(f"Failed to embed PPTX slides: {e}") from e
 
     def embed_spreadsheet(self, spreadsheet_data: bytes) -> list[float]:
         """Generate embedding for spreadsheet content (XLSX).
@@ -439,6 +599,79 @@ class EmbeddingGenerator:
 
         raise UnsupportedContentTypeError(
             f"Cannot generate embedding for content type: {content_type}"
+        )
+
+    def embed_file_chunked(
+        self, file_path: Path, content_type: str | None = None
+    ) -> FileEmbeddings:
+        """Generate embeddings for a file with chunking support.
+
+        Uses chunking for multi-page/multi-slide documents:
+        - PDF: One embedding per page (DOCUMENT_IMAGE detail level)
+        - PPTX: One embedding per slide (text extraction)
+        - Other types: Single embedding wrapped in FileEmbeddings
+
+        Args:
+            file_path: Path to the file.
+            content_type: Optional MIME type (auto-detected if None).
+
+        Returns:
+            FileEmbeddings containing one or more ChunkEmbedding objects.
+
+        Raises:
+            UnsupportedContentTypeError: If content type is not supported.
+            EmbeddingError: If embedding generation fails.
+            FileNotFoundError: If file doesn't exist.
+
+        Example:
+            result = generator.embed_file_chunked(Path("report.pdf"))
+            if result.is_single_chunk:
+                print("Single embedding generated")
+            else:
+                print(f"Generated {result.total_chunks} embeddings")
+        """
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        if content_type is None:
+            content_type, _ = mimetypes.guess_type(str(file_path))
+            content_type = content_type or "application/octet-stream"
+
+        modality = self.get_modality(content_type)
+        file_data = file_path.read_bytes() if modality != "text" else None
+
+        # Content types that support chunking
+        pptx_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+        # PDF: Embed all pages
+        if modality == "pdf":
+            assert file_data is not None
+            result = self.embed_pdf_pages(file_data)
+            result.source_file = file_path.name
+            return result
+
+        # PPTX: Embed all slides
+        if content_type == pptx_type:
+            assert file_data is not None
+            result = self.embed_pptx_slides(file_data)
+            result.source_file = file_path.name
+            return result
+
+        # All other types: Single embedding wrapped in FileEmbeddings
+        embedding = self.embed_file(file_path, content_type)
+
+        return FileEmbeddings(
+            source_file=file_path.name,
+            content_type=content_type,
+            chunks=[
+                ChunkEmbedding(
+                    chunk_type=ChunkType.FILE,
+                    chunk_index=1,
+                    total_chunks=1,
+                    embedding=embedding,
+                    chunk_id="",  # No fragment for single-chunk files
+                )
+            ],
         )
 
     def get_modality(self, content_type: str) -> str:

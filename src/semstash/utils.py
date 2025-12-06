@@ -287,6 +287,124 @@ def get_filename(file_path: str) -> str:
     return file_path.split("/")[-1]
 
 
+# --- Fragment Key Utilities ---
+
+
+def make_chunk_key(base_key: str, chunk_id: str) -> str:
+    """Create a chunk key by appending fragment identifier.
+
+    Fragment notation uses '#' to separate base key from chunk identifier,
+    similar to URL fragments.
+
+    Args:
+        base_key: Base S3 key (e.g., 'docs/report.pdf').
+        chunk_id: Chunk identifier (e.g., 'page=1', 'slide=3').
+
+    Returns:
+        Combined key with fragment (e.g., 'docs/report.pdf#page=1').
+
+    Examples:
+        >>> make_chunk_key('docs/report.pdf', 'page=1')
+        'docs/report.pdf#page=1'
+        >>> make_chunk_key('audio/podcast.mp3', 'segment=5')
+        'audio/podcast.mp3#segment=5'
+        >>> make_chunk_key('file.txt', '')
+        'file.txt'
+    """
+    if not chunk_id:
+        return base_key
+    return f"{base_key}#{chunk_id}"
+
+
+def parse_chunk_key(chunk_key: str) -> tuple[str, str | None]:
+    """Parse a chunk key into base key and fragment.
+
+    Args:
+        chunk_key: Key with optional fragment (e.g., 'docs/report.pdf#page=1').
+
+    Returns:
+        Tuple of (base_key, chunk_id or None).
+
+    Examples:
+        >>> parse_chunk_key('docs/report.pdf#page=1')
+        ('docs/report.pdf', 'page=1')
+        >>> parse_chunk_key('docs/report.pdf')
+        ('docs/report.pdf', None)
+        >>> parse_chunk_key('audio/file.mp3#segment=10')
+        ('audio/file.mp3', 'segment=10')
+    """
+    if "#" not in chunk_key:
+        return (chunk_key, None)
+
+    parts = chunk_key.split("#", 1)
+    return (parts[0], parts[1] if len(parts) > 1 else None)
+
+
+def parse_chunk_id(chunk_id: str) -> tuple[str, int]:
+    """Parse a chunk identifier into type and index.
+
+    Args:
+        chunk_id: Chunk identifier (e.g., 'page=5', 'segment=10').
+
+    Returns:
+        Tuple of (chunk_type, chunk_index).
+
+    Raises:
+        ValueError: If chunk_id format is invalid.
+
+    Examples:
+        >>> parse_chunk_id('page=5')
+        ('page', 5)
+        >>> parse_chunk_id('segment=10')
+        ('segment', 10)
+    """
+    if "=" not in chunk_id:
+        raise ValueError(f"Invalid chunk_id format: {chunk_id}")
+
+    parts = chunk_id.split("=", 1)
+    try:
+        return (parts[0], int(parts[1]))
+    except ValueError:
+        raise ValueError(f"Invalid chunk index in: {chunk_id}") from None
+
+
+def get_source_key(chunk_key: str) -> str:
+    """Get the source file key from a chunk key.
+
+    Args:
+        chunk_key: Key with optional fragment.
+
+    Returns:
+        Base key without fragment.
+
+    Examples:
+        >>> get_source_key('docs/report.pdf#page=1')
+        'docs/report.pdf'
+        >>> get_source_key('docs/report.pdf')
+        'docs/report.pdf'
+    """
+    base_key, _ = parse_chunk_key(chunk_key)
+    return base_key
+
+
+def is_chunk_key(key: str) -> bool:
+    """Check if a key is a chunk key (has fragment).
+
+    Args:
+        key: S3 key to check.
+
+    Returns:
+        True if key contains a fragment identifier.
+
+    Examples:
+        >>> is_chunk_key('docs/report.pdf#page=1')
+        True
+        >>> is_chunk_key('docs/report.pdf')
+        False
+    """
+    return "#" in key
+
+
 # --- Caching Utilities ---
 
 

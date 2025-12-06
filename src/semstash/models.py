@@ -23,6 +23,90 @@ class ContentType(str, Enum):
     SPREADSHEET = "spreadsheet"
 
 
+class ChunkType(str, Enum):
+    """Type of chunk within a file."""
+
+    PAGE = "page"  # PDF pages, rendered document pages
+    SLIDE = "slide"  # PowerPoint slides
+    SHEET = "sheet"  # Excel sheets
+    SEGMENT = "segment"  # Audio/video time segments
+    CHUNK = "chunk"  # Text chunks
+    FILE = "file"  # Entire file (no chunking)
+
+
+class ChunkEmbedding(BaseModel):
+    """Single chunk/page/segment embedding result.
+
+    Represents one embedding from a multi-chunk file. For example, a 10-page
+    PDF produces 10 ChunkEmbedding objects, one per page.
+
+    Example:
+        # PDF page embedding
+        ChunkEmbedding(
+            chunk_type=ChunkType.PAGE,
+            chunk_index=1,
+            total_chunks=10,
+            embedding=[0.1, 0.2, ...],
+            chunk_id="page=1",
+        )
+    """
+
+    chunk_type: ChunkType = Field(description="Type of chunk (page, slide, segment, etc.)")
+    chunk_index: int = Field(ge=1, description="1-indexed position within the file")
+    total_chunks: int = Field(ge=1, description="Total number of chunks in the file")
+    embedding: list[float] = Field(description="Embedding vector")
+    chunk_id: str = Field(
+        default="",
+        description="Fragment identifier (e.g., 'page=1', 'slide=3', 'segment=5')",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Generate chunk_id if not provided."""
+        if not self.chunk_id:
+            # Map chunk type to fragment key
+            fragment_map = {
+                ChunkType.PAGE: "page",
+                ChunkType.SLIDE: "slide",
+                ChunkType.SHEET: "sheet",
+                ChunkType.SEGMENT: "segment",
+                ChunkType.CHUNK: "chunk",
+                ChunkType.FILE: "",
+            }
+            prefix = fragment_map.get(self.chunk_type, "chunk")
+            if prefix:
+                object.__setattr__(self, "chunk_id", f"{prefix}={self.chunk_index}")
+
+
+class FileEmbeddings(BaseModel):
+    """All embeddings for a single file.
+
+    Contains one or more chunk embeddings depending on file type:
+    - Single image: 1 embedding (chunk_type=FILE)
+    - 10-page PDF: 10 embeddings (chunk_type=PAGE)
+    - Large text file: N embeddings (chunk_type=CHUNK)
+
+    Example:
+        result = embedding_generator.embed_file(Path("report.pdf"))
+        print(f"Generated {len(result.chunks)} embeddings")
+        for chunk in result.chunks:
+            print(f"  {chunk.chunk_type.value} {chunk.chunk_index}/{chunk.total_chunks}")
+    """
+
+    source_file: str = Field(description="Original filename or identifier")
+    content_type: str = Field(description="MIME type of the source file")
+    chunks: list[ChunkEmbedding] = Field(description="List of chunk embeddings")
+
+    @property
+    def total_chunks(self) -> int:
+        """Total number of chunks."""
+        return len(self.chunks)
+
+    @property
+    def is_single_chunk(self) -> bool:
+        """Whether file produced a single embedding."""
+        return len(self.chunks) == 1 and self.chunks[0].chunk_type == ChunkType.FILE
+
+
 class StashConfig(BaseModel):
     """Configuration stored in the stash's S3 bucket.
 

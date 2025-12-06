@@ -67,9 +67,12 @@ from semstash.exceptions import (
 from semstash.models import (
     BrowseResult,
     CheckResult,
+    ChunkEmbedding,
+    ChunkType,
     ContentType,
     DeleteResult,
     DestroyResult,
+    FileEmbeddings,
     GetResult,
     InitResult,
     SearchResult,
@@ -104,6 +107,9 @@ __all__ = [
     "AlreadyExistsError",
     # Models
     "ContentType",
+    "ChunkType",
+    "ChunkEmbedding",
+    "FileEmbeddings",
     "StashConfig",
     "StorageItem",
     "SearchResult",

@@ -683,6 +683,68 @@ class VectorStorage:
         except ClientError as e:
             raise StorageError(f"Failed to store vector {key}: {e}") from e
 
+    def put_vectors_batch(
+        self,
+        vectors: list[tuple[str, list[float], dict[str, Any] | None]],
+    ) -> int:
+        """Store multiple vectors efficiently in batches.
+
+        Uses S3 Vectors batch API to store up to 500 vectors per request.
+        Automatically batches larger lists.
+
+        Args:
+            vectors: List of (key, vector, metadata) tuples.
+
+        Returns:
+            Number of vectors stored.
+
+        Raises:
+            NotInitializedError: If index not initialized.
+            StorageError: If storage fails.
+
+        Example:
+            vectors = [
+                ("doc.pdf#page=1", [0.1, 0.2, ...], {"page": 1}),
+                ("doc.pdf#page=2", [0.3, 0.4, ...], {"page": 2}),
+            ]
+            count = storage.put_vectors_batch(vectors)
+        """
+        if not self._initialized:
+            raise NotInitializedError(
+                "Vector index not initialized. Call ensure_index_exists() first."
+            )
+
+        if not vectors:
+            return 0
+
+        stored_count = 0
+        # S3 Vectors allows up to 500 vectors per put_vectors call
+        batch_size = 500
+
+        for batch in batched(vectors, batch_size, strict=False):
+            try:
+                vector_data_list = []
+                for key, vector, metadata in batch:
+                    vector_data: dict[str, Any] = {
+                        "key": key,
+                        "data": {"float32": vector},
+                    }
+                    if metadata:
+                        vector_data["metadata"] = metadata
+                    vector_data_list.append(vector_data)
+
+                self.client.put_vectors(
+                    vectorBucketName=self.bucket,
+                    indexName=self.index_name,
+                    vectors=vector_data_list,
+                )
+                stored_count += len(vector_data_list)
+
+            except ClientError as e:
+                raise StorageError(f"Failed to store vector batch: {e}") from e
+
+        return stored_count
+
     def get_vector(self, key: str) -> tuple[list[float], dict[str, Any] | None]:
         """Retrieve a vector by key.
 

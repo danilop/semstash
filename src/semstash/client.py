@@ -43,6 +43,7 @@ from typing import Any
 
 from semstash.config import load_config
 from semstash.embeddings import EmbeddingGenerator, is_supported_content_type
+from semstash.models import ChunkType
 from semstash.exceptions import (
     AlreadyExistsError,
     BucketNotFoundError,
@@ -64,7 +65,14 @@ from semstash.models import (
     UsageStats,
 )
 from semstash.storage import ContentStorage, VectorStorage
-from semstash.utils import key_to_path, normalize_path, path_to_key, resolve_upload_target
+from semstash.utils import (
+    key_to_path,
+    make_chunk_key,
+    normalize_path,
+    parse_chunk_key,
+    path_to_key,
+    resolve_upload_target,
+)
 
 
 class SemStash:
@@ -353,7 +361,8 @@ class SemStash:
     ) -> UploadResult:
         """Upload a file to semantic storage.
 
-        Stores the file in S3 and generates an embedding for semantic search.
+        Stores the file in S3 and generates embeddings for semantic search.
+        Multi-page documents (PDF, PPTX) generate one embedding per page/slide.
 
         Args:
             file_path: Path to the file to upload.
@@ -390,44 +399,84 @@ class SemStash:
         # Resolve target to key and path
         key, path = resolve_upload_target(file_path, target)
 
+        # Generate embeddings first to know chunk count (before S3 upload)
+        # This is needed to store chunk metadata in S3 for proper deletion later
+        actual_content_type = content_type
+        if actual_content_type is None:
+            import mimetypes
+
+            actual_content_type, _ = mimetypes.guess_type(str(file_path))
+            actual_content_type = actual_content_type or "application/octet-stream"
+
+        # Check if content type is supported for embedding
+        if not is_supported_content_type(actual_content_type):
+            raise UnsupportedContentTypeError(
+                f"Cannot embed content type: {actual_content_type}"
+            )
+
+        # Generate embeddings (may produce multiple for multi-page documents)
+        file_embeddings = self._embedding_generator.embed_file_chunked(  # type: ignore
+            file_path=file_path,
+            content_type=actual_content_type,
+        )
+
+        # Build S3 metadata including chunk info for deletion support
+        s3_metadata = dict(metadata) if metadata else {}
+        if not file_embeddings.is_single_chunk:
+            # Store chunk info so delete can find all chunk vectors
+            s3_metadata["x-semstash-chunks"] = str(file_embeddings.total_chunks)
+            s3_metadata["x-semstash-chunk-type"] = file_embeddings.chunks[0].chunk_type.value
+
         # Upload to S3
         storage_item = self._content_storage.upload(  # type: ignore
             file_path=file_path,
             key=key,
-            content_type=content_type,
-            metadata=metadata,
+            content_type=actual_content_type,
+            metadata=s3_metadata if s3_metadata else None,
             force=force,
         )
 
-        # Check if content type is supported for embedding
-        if not is_supported_content_type(storage_item.content_type):
-            raise UnsupportedContentTypeError(
-                f"Cannot embed content type: {storage_item.content_type}"
-            )
-
-        # Generate embedding
-        embedding = self._embedding_generator.embed_file(  # type: ignore
-            file_path=file_path,
-            content_type=storage_item.content_type,
-        )
-
-        # Store embedding with metadata (including path for filtering)
-        vector_metadata: dict[str, Any] = {
+        # Build base metadata for all vectors
+        base_metadata: dict[str, Any] = {
             "content_type": storage_item.content_type,
             "file_size": storage_item.file_size,
             "created_at": storage_item.created_at.isoformat(),
             "path": path,  # Store path for path-based filtering
+            "source_key": storage_item.key,  # Original file key (for chunk grouping)
         }
         if tags:
-            vector_metadata["tags"] = tags  # Store as list for native S3 Vectors filtering
+            base_metadata["tags"] = tags
         if metadata:
-            vector_metadata.update(metadata)
+            base_metadata.update(metadata)
 
-        self._vector_storage.put_vector(  # type: ignore
-            key=storage_item.key,
-            vector=embedding,
-            metadata=vector_metadata,
-        )
+        # Store embeddings
+        if file_embeddings.is_single_chunk:
+            # Single embedding - use original key (no fragment)
+            self._vector_storage.put_vector(  # type: ignore
+                key=storage_item.key,
+                vector=file_embeddings.chunks[0].embedding,
+                metadata=base_metadata,
+            )
+        else:
+            # Multiple embeddings - use fragment keys and batch insert
+            vectors_to_store: list[tuple[str, list[float], dict[str, Any] | None]] = []
+
+            for chunk in file_embeddings.chunks:
+                # Create chunk-specific key with fragment
+                chunk_key = make_chunk_key(storage_item.key, chunk.chunk_id)
+
+                # Add chunk-specific metadata
+                chunk_metadata = {
+                    **base_metadata,
+                    "chunk_type": chunk.chunk_type.value,
+                    "chunk_index": chunk.chunk_index,
+                    "total_chunks": chunk.total_chunks,
+                }
+
+                vectors_to_store.append((chunk_key, chunk.embedding, chunk_metadata))
+
+            # Batch insert all chunk vectors
+            self._vector_storage.put_vectors_batch(vectors_to_store)  # type: ignore
 
         return UploadResult(
             key=storage_item.key,
@@ -564,12 +613,15 @@ class SemStash:
         # Enrich results with URLs and metadata
         enriched_results = []
         for result in results:
-            # Add URL if requested
-            if include_url:
-                result.url = self._content_storage.get_presigned_url(result.key, expiry=url_expiry)  # type: ignore
+            # Handle chunk keys - get source key for URL generation
+            source_key, chunk_id = parse_chunk_key(result.key)
 
-            # Fill in path from vector metadata (or compute from key)
-            result.path = result.metadata.get("path", key_to_path(result.key))
+            # Add URL if requested (use source key, not chunk key)
+            if include_url:
+                result.url = self._content_storage.get_presigned_url(source_key, expiry=url_expiry)  # type: ignore
+
+            # Fill in path from vector metadata (or compute from source key)
+            result.path = result.metadata.get("path", key_to_path(source_key))
 
             # Fill in content metadata from vector metadata
             result.content_type = result.metadata.get("content_type")
@@ -580,6 +632,19 @@ class SemStash:
             if "tags" in result.metadata:
                 # Tags stored as list in S3 Vectors
                 result.tags = result.metadata["tags"]
+
+            # Add chunk metadata if present (for multi-page/multi-slide results)
+            # This allows callers to see "Page 5 of 47" or "Slide 3 of 20"
+            if chunk_id:
+                result.metadata["_chunk_id"] = chunk_id
+            if "chunk_type" in result.metadata:
+                result.metadata["_chunk_type"] = result.metadata["chunk_type"]
+            if "chunk_index" in result.metadata:
+                result.metadata["_chunk_index"] = result.metadata["chunk_index"]
+            if "total_chunks" in result.metadata:
+                result.metadata["_total_chunks"] = result.metadata["total_chunks"]
+            if "source_key" in result.metadata:
+                result.metadata["_source_key"] = result.metadata["source_key"]
 
             enriched_results.append(result)
 
@@ -710,7 +775,9 @@ class SemStash:
     def delete(self, path: str) -> DeleteResult:
         """Delete content from storage.
 
-        Removes both the S3 object and its vector embedding.
+        Removes both the S3 object and all associated vector embeddings.
+        For chunked files (multi-page PDFs, multi-slide PPTX), deletes all
+        chunk vectors.
 
         Args:
             path: Path of the content (e.g., '/docs/readme.txt').
@@ -726,11 +793,37 @@ class SemStash:
         # Convert path to key
         key = path_to_key(path)
 
+        # Get S3 metadata to check for chunks
+        try:
+            storage_item = self._content_storage.get_metadata(key)  # type: ignore
+            s3_metadata = storage_item.metadata or {}
+        except Exception:
+            s3_metadata = {}
+
         # Delete from S3
         self._content_storage.delete(key)  # type: ignore
 
-        # Delete vector
-        self._vector_storage.delete_vector(key)  # type: ignore
+        # Delete vectors - handle both single and chunked files
+        chunks_str = s3_metadata.get("x-semstash-chunks")
+        chunk_type = s3_metadata.get("x-semstash-chunk-type")
+
+        if chunks_str and chunk_type:
+            # Multi-chunk file - delete all chunk vectors
+            try:
+                total_chunks = int(chunks_str)
+                chunk_keys = []
+                for i in range(1, total_chunks + 1):
+                    chunk_id = f"{chunk_type}={i}"
+                    chunk_keys.append(make_chunk_key(key, chunk_id))
+
+                if chunk_keys:
+                    self._vector_storage.delete_vectors_batch(chunk_keys)  # type: ignore
+            except (ValueError, TypeError):
+                # Fallback: try to delete single key
+                self._vector_storage.delete_vector(key)  # type: ignore
+        else:
+            # Single-chunk file - delete single vector
+            self._vector_storage.delete_vector(key)  # type: ignore
 
         return DeleteResult(
             key=key,
@@ -829,11 +922,25 @@ class SemStash:
         # Get all vector keys from S3 Vectors
         vector_keys = self._vector_storage.list_all_keys()  # type: ignore
 
-        # Find orphaned vectors (in vectors but not in content)
-        orphaned = vector_keys - content_keys
+        # Extract source keys from vector keys (strip fragments for chunk vectors)
+        # A content file "docs/file.pdf" may have vectors:
+        # - "docs/file.pdf" (single-chunk)
+        # - "docs/file.pdf#page=1", "docs/file.pdf#page=2", ... (multi-chunk)
+        vector_source_keys: set[str] = set()
+        for vkey in vector_keys:
+            source_key, _ = parse_chunk_key(vkey)
+            vector_source_keys.add(source_key)
 
-        # Find missing vectors (in content but not in vectors)
-        missing = content_keys - vector_keys
+        # Find orphaned vectors (vectors whose source file doesn't exist)
+        # We report the actual vector keys (with fragments) for deletion
+        orphaned: set[str] = set()
+        for vkey in vector_keys:
+            source_key, _ = parse_chunk_key(vkey)
+            if source_key not in content_keys:
+                orphaned.add(vkey)
+
+        # Find missing vectors (content files without any vectors)
+        missing = content_keys - vector_source_keys
 
         is_consistent = not orphaned and not missing
 
@@ -842,7 +949,9 @@ class SemStash:
         else:
             issues = []
             if orphaned:
-                issues.append(f"{len(orphaned)} orphaned vectors")
+                # Count unique source files with orphaned vectors
+                orphaned_sources = {parse_chunk_key(k)[0] for k in orphaned}
+                issues.append(f"{len(orphaned)} orphaned vectors ({len(orphaned_sources)} files)")
             if missing:
                 issues.append(f"{len(missing)} missing embeddings")
             message = f"Storage inconsistent: {', '.join(issues)}"
@@ -906,10 +1015,10 @@ class SemStash:
             for key in check_result.missing_vectors:
                 try:
                     # Get content metadata first
-                    metadata = self._content_storage.get_metadata(key)  # type: ignore
+                    storage_metadata = self._content_storage.get_metadata(key)  # type: ignore
 
                     # Check if content type is supported
-                    if not is_supported_content_type(metadata.content_type):
+                    if not is_supported_content_type(storage_metadata.content_type):
                         failed_keys.append(key)
                         continue
 
@@ -917,18 +1026,43 @@ class SemStash:
                     with tempfile.NamedTemporaryFile(delete=False) as tmp:
                         self._content_storage.download(key, Path(tmp.name))  # type: ignore
 
-                        # Generate embedding
-                        embedding = self._embedding_generator.generate_from_file(  # type: ignore
+                        # Generate embeddings (may produce multiple for multi-page docs)
+                        file_embeddings = self._embedding_generator.embed_file_chunked(  # type: ignore
                             Path(tmp.name),
-                            content_type=metadata.content_type,
+                            content_type=storage_metadata.content_type,
                         )
 
-                        # Store vector
-                        self._vector_storage.put_vector(  # type: ignore
-                            key=key,
-                            vector=embedding,
-                            metadata={"content_type": metadata.content_type},
-                        )
+                        # Build base metadata
+                        base_metadata: dict[str, Any] = {
+                            "content_type": storage_metadata.content_type,
+                            "file_size": storage_metadata.file_size,
+                            "created_at": storage_metadata.created_at.isoformat(),
+                            "path": key_to_path(key),
+                            "source_key": key,
+                        }
+
+                        # Store embeddings
+                        if file_embeddings.is_single_chunk:
+                            # Single embedding
+                            self._vector_storage.put_vector(  # type: ignore
+                                key=key,
+                                vector=file_embeddings.chunks[0].embedding,
+                                metadata=base_metadata,
+                            )
+                        else:
+                            # Multiple embeddings - use fragment keys
+                            vectors_to_store: list[tuple[str, list[float], dict[str, Any] | None]] = []
+                            for chunk in file_embeddings.chunks:
+                                chunk_key = make_chunk_key(key, chunk.chunk_id)
+                                chunk_metadata = {
+                                    **base_metadata,
+                                    "chunk_type": chunk.chunk_type.value,
+                                    "chunk_index": chunk.chunk_index,
+                                    "total_chunks": chunk.total_chunks,
+                                }
+                                vectors_to_store.append((chunk_key, chunk.embedding, chunk_metadata))
+
+                            self._vector_storage.put_vectors_batch(vectors_to_store)  # type: ignore
 
                         # Clean up temp file
                         Path(tmp.name).unlink()

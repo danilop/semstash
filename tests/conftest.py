@@ -134,8 +134,14 @@ def aws_credentials(request: pytest.FixtureRequest) -> Generator[None]:
 
 @pytest.fixture(scope="session")
 def integration_bucket_name() -> str:
-    """Generate unique bucket name for all integration tests (session-scoped)."""
+    """Generate unique bucket name for integration tests (session-scoped)."""
     return f"semstash-test-{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+def agent_bucket_name() -> str:
+    """Generate unique bucket name for agent tests (session-scoped)."""
+    return f"semstash-agent-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="session")
@@ -157,11 +163,16 @@ def _session_stash(
     - Option to preserve resources with --preserve-aws flag
     """
     from semstash import SemStash
+    from semstash.exceptions import AlreadyExistsError
 
     stash = SemStash(integration_bucket_name, dimension=256)
-    stash.init()  # Initialize once for all tests
-
-    print(f"\n>>> Created integration test resources: {integration_bucket_name}")
+    try:
+        stash.init()  # Initialize once for all tests
+        print(f"\n>>> Created integration test resources: {integration_bucket_name}")
+    except AlreadyExistsError:
+        # Bucket already exists (e.g., from agent tests), just open it
+        stash.open()
+        print(f"\n>>> Opened existing integration test resources: {integration_bucket_name}")
 
     yield stash
 
@@ -193,9 +204,9 @@ def integration_stash(_session_stash: Any) -> Generator[Any]:
 
     # Clear all content before the test for isolation
     try:
-        browse_result = stash.browse()
+        browse_result = stash.browse("/")
         for item in browse_result.items:
-            stash.delete(item.key)
+            stash.delete(item.path)
     except Exception:
         pass  # Ignore errors (e.g., if no content exists)
 
@@ -218,6 +229,26 @@ def real_s3vectors_client() -> Any:
 def real_bedrock_client() -> Any:
     """Create real Bedrock Runtime client for integration tests."""
     return boto3.client("bedrock-runtime", region_name="us-east-1")
+
+
+@pytest.fixture(scope="class", autouse=False)
+def agent_stash_cleanup(agent_bucket_name: str, preserve_aws: bool) -> Generator[None]:
+    """Cleanup agent test bucket after agent test class completes."""
+    from semstash import SemStash
+
+    yield  # Run tests first
+
+    # Cleanup after agent tests
+    if preserve_aws:
+        print(f"\n--preserve-aws: Keeping agent resources for {agent_bucket_name}")
+    else:
+        try:
+            stash = SemStash(agent_bucket_name, auto_init=False)
+            stash.open()
+            stash.destroy(force=True)
+            print(f"\n>>> Cleaned up agent test resources: {agent_bucket_name}")
+        except Exception as e:
+            print(f"\nWarning: Failed to cleanup agent bucket {agent_bucket_name}: {e}")
 
 
 # --- S3 Mocking (using moto) ---

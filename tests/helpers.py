@@ -67,7 +67,7 @@ def assert_valid_query_results(
     Args:
         results: List of SearchResult objects
         min_count: Minimum number of results expected
-        expected_keys: If set, assert all these keys are in results
+        expected_keys: If set, assert all these keys are in results (supports chunked keys)
     """
     assert len(results) >= min_count, f"Expected at least {min_count} results, got {len(results)}"
 
@@ -77,5 +77,8 @@ def assert_valid_query_results(
 
     if expected_keys is not None:
         result_keys = {r.key for r in results}
+        # Also extract source keys from chunked results (e.g., "file.pdf#page=1" -> "file.pdf")
+        source_keys = {k.split("#")[0] for k in result_keys}
+        all_keys = result_keys | source_keys
         for key in expected_keys:
-            assert key in result_keys, f"Expected key {key} in results, got {result_keys}"
+            assert key in all_keys, f"Expected key {key} in results, got {result_keys}"

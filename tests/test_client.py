@@ -483,23 +483,23 @@ class TestBuildFilterExpression:
             ]
         }
 
-    def test_path_filter(self, stash: SemStash) -> None:
-        """Returns $startsWith filter for path."""
-        result = stash._build_filter_expression(path="/docs/")
-        assert result == {"path": {"$startsWith": "/docs/"}}
+    def test_path_filter_not_in_expression(self, stash: SemStash) -> None:
+        """Path filtering is done client-side, not in filter expression."""
+        # Path is not passed to _build_filter_expression since S3 Vectors
+        # doesn't support prefix matching operators like $startsWith
+        result = stash._build_filter_expression()
+        assert result is None
 
-    def test_all_filters(self, stash: SemStash) -> None:
-        """Returns $and filter with all conditions."""
+    def test_all_filters_without_path(self, stash: SemStash) -> None:
+        """Returns $and filter with content_type and tags (path filtered client-side)."""
         result = stash._build_filter_expression(
             content_type="text/plain",
             tags=["doc"],
-            path="/docs/",
         )
         assert result == {
             "$and": [
                 {"content_type": {"$eq": "text/plain"}},
                 {"tags": {"$in": ["doc"]}},
-                {"path": {"$startsWith": "/docs/"}},
             ]
         }
 

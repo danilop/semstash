@@ -162,9 +162,12 @@ class TestIntegrationBrowse:
         assert result.items[0].key == f"config/{sample_json_file.name}"
         assert result.items[0].path == f"/config/{sample_json_file.name}"
 
-        # Browse root - should be empty (files are in subfolders)
+        # Browse root - should show all items (S3 lists all objects with prefix)
         result = integration_stash.browse("/")
-        assert len(result.items) == 0
+        assert len(result.items) == 2
+        keys = {item.key for item in result.items}
+        assert f"docs/{sample_text_file.name}" in keys
+        assert f"config/{sample_json_file.name}" in keys
 
     def test_browse_nonexistent_path_returns_empty(
         self,
@@ -586,10 +589,12 @@ class TestIntegrationDocuments:
         )
         assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_pdf_file.name])
 
-        # Verify path in result
-        matched = next((r for r in query_results if r.key == sample_pdf_file.name), None)
+        # Verify path in result (may be chunked, e.g., /sample.pdf#page=1)
+        matched = next(
+            (r for r in query_results if r.key.split("#")[0] == sample_pdf_file.name), None
+        )
         assert matched is not None
-        assert matched.path == f"/{sample_pdf_file.name}"
+        assert matched.path.split("#")[0] == f"/{sample_pdf_file.name}"
 
     def test_upload_docx_and_query(
         self,
@@ -719,10 +724,12 @@ class TestIntegrationDocuments:
         # At minimum the JPG should match with valid scores
         assert_valid_query_results(query_results, min_count=1, expected_keys=[sample_jpg_file.name])
 
-        # Verify path is present in results
+        # Verify path is present in results (may be chunked)
         for r in query_results:
             assert r.path.startswith("/")
-            assert r.path == f"/{r.key}"
+            # Path may include chunk suffix like #page=1 or #slide=2
+            source_key = r.key.split("#")[0]
+            assert r.path.split("#")[0] == f"/{source_key}"
 
 
 @pytest.mark.integration

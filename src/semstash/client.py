@@ -596,16 +596,22 @@ class SemStash:
         if url_expiry is None:
             url_expiry = self.config.presigned_url_expiry
 
+        # Normalize path filter for client-side filtering
+        path_prefix = normalize_path(path) if path else None
+
         # Generate query embedding
         query_embedding = self._embedding_generator.embed_text(query_text)  # type: ignore
 
-        # Build native S3 Vectors filter expression
-        filter_expr = self._build_filter_expression(content_type=content_type, tags=tags, path=path)
+        # Build native S3 Vectors filter expression (path filtering done client-side)
+        filter_expr = self._build_filter_expression(content_type=content_type, tags=tags)
+
+        # Request more results if path filtering to ensure we get enough matches
+        query_top_k = top_k * 3 if path_prefix else top_k
 
         # Query vectors with server-side filtering
         results = self._vector_storage.query(  # type: ignore
             vector=query_embedding,
-            top_k=top_k,
+            top_k=query_top_k,
             filter_expression=filter_expr,
         )
 
@@ -615,12 +621,16 @@ class SemStash:
             # Handle chunk keys - get source key for URL generation
             source_key, chunk_id = parse_chunk_key(result.key)
 
+            # Fill in path from vector metadata (or compute from source key)
+            result.path = result.metadata.get("path", key_to_path(source_key))
+
+            # Client-side path filtering (S3 Vectors doesn't support prefix matching)
+            if path_prefix and not result.path.startswith(path_prefix):
+                continue
+
             # Add URL if requested (use source key, not chunk key)
             if include_url:
                 result.url = self._content_storage.get_presigned_url(source_key, expiry=url_expiry)  # type: ignore
-
-            # Fill in path from vector metadata (or compute from source key)
-            result.path = result.metadata.get("path", key_to_path(source_key))
 
             # Fill in content metadata from vector metadata
             result.content_type = result.metadata.get("content_type")
@@ -647,23 +657,29 @@ class SemStash:
 
             enriched_results.append(result)
 
+            # Stop once we have enough results
+            if len(enriched_results) >= top_k:
+                break
+
         return enriched_results
 
     def _build_filter_expression(
         self,
         content_type: str | None = None,
         tags: list[str] | None = None,
-        path: str | None = None,
     ) -> dict[str, Any] | None:
         """Build S3 Vectors native filter expression.
 
         Args:
             content_type: Filter by exact content type match.
             tags: Filter by tags (any match using $in operator).
-            path: Filter by path prefix (e.g., '/docs/' matches '/docs/file.txt').
 
         Returns:
             S3 Vectors filter expression dict, or None if no filters.
+
+        Note:
+            Path filtering is done client-side after query since S3 Vectors
+            doesn't support prefix matching operators like $startsWith.
         """
         filters: list[dict[str, Any]] = []
 
@@ -675,11 +691,6 @@ class SemStash:
             # Match any of the specified tags using $in
             # S3 Vectors $in on array metadata returns true if any element matches
             filters.append({"tags": {"$in": tags}})
-
-        if path:
-            # Filter by path prefix using $startsWith
-            normalized_path = normalize_path(path)
-            filters.append({"path": {"$startsWith": normalized_path}})
 
         if not filters:
             return None

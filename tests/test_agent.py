@@ -73,7 +73,7 @@ class TestSemStashAgent:
 
         # Verify content exists in semstash directly (proves MCP tool worked)
         stash = SemStash(bucket=integration_bucket_name, auto_init=False)
-        browse = stash.browse()
+        browse = stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_text_file.name in keys, f"File not found in semstash. Keys: {keys}"
 
@@ -95,7 +95,7 @@ class TestSemStashAgent:
 
         # Verify in semstash directly
         stash = SemStash(bucket=integration_bucket_name, auto_init=False)
-        browse = stash.browse()
+        browse = stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_image_file.name in keys, f"Image not found in semstash. Keys: {keys}"
 
@@ -140,7 +140,7 @@ class TestSemStashAgent:
         )
 
         # Verify file exists
-        browse = stash.browse()
+        browse = stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_json_file.name in keys
 
@@ -155,7 +155,7 @@ class TestSemStashAgent:
             agent1(f"Upload the file at {sample_text_file}")
 
         # Verify exists
-        browse = stash.browse()
+        browse = stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_text_file.name in keys
 
@@ -167,6 +167,6 @@ class TestSemStashAgent:
             assert "delete" in delete_result.lower() or sample_text_file.name in delete_result
 
         # Verify deleted from semstash
-        browse = stash.browse()
+        browse = stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_text_file.name not in keys, "File should be deleted from semstash"

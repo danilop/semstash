@@ -28,7 +28,7 @@ from typing import Any
 
 import boto3
 import docx
-import fitz  # PyMuPDF
+import fitz  # type: ignore[import-untyped]  # PyMuPDF
 import openpyxl
 from botocore.exceptions import ClientError
 from pptx import Presentation
@@ -787,9 +787,7 @@ class EmbeddingGenerator:
         is_large_text = file_size > TEXT_ASYNC_THRESHOLD_BYTES
         if modality == "text" and use_async and s3_bucket and is_large_text:
             text = file_path.read_text(encoding="utf-8", errors="replace")
-            return self.embed_text_segmented(
-                text, s3_bucket, source_file=file_path.name
-            )
+            return self.embed_text_segmented(text, s3_bucket, source_file=file_path.name)
 
         # Large audio: Use async segmentation if bucket provided
         is_large_audio = file_size > AUDIO_ASYNC_THRESHOLD_BYTES

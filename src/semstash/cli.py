@@ -696,9 +696,9 @@ def delete(
 
         if output == "json":
             if len(results) == 1:
-                output_json({
-                    "path": paths[0], "key": results[0].key, "deleted": results[0].deleted
-                })
+                output_json(
+                    {"path": paths[0], "key": results[0].key, "deleted": results[0].deleted}
+                )
             else:
                 output_json(
                     {

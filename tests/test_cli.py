@@ -171,7 +171,9 @@ class TestCliUpload:
         mock_stash.upload.return_value = mock_result
         mock_stash_class.return_value = mock_stash
 
-        result = runner.invoke(app, ["upload", "test-bucket", str(sample_text_file), "/", "--force"])
+        result = runner.invoke(
+            app, ["upload", "test-bucket", str(sample_text_file), "/", "--force"]
+        )
 
         assert result.exit_code == 0
         mock_stash.upload.assert_called_once()

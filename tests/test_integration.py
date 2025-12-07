@@ -16,6 +16,7 @@ import pytest
 from helpers import assert_valid_query_results, assert_valid_search_result
 
 from semstash import SemStash
+from semstash.exceptions import ContentNotFoundError
 
 
 @pytest.mark.integration
@@ -87,9 +88,7 @@ class TestIntegrationUploadQuery:
 
         # Query should find the file
         query_results = integration_stash.query("sample text for testing semantic storage", top_k=5)
-        assert_valid_query_results(
-            query_results, min_count=1, expected_keys=["renamed/readme.txt"]
-        )
+        assert_valid_query_results(query_results, min_count=1, expected_keys=["renamed/readme.txt"])
 
     def test_upload_image_and_query(
         self,
@@ -235,7 +234,7 @@ class TestIntegrationGetDelete:
         integration_stash.upload(sample_text_file, target="/")
 
         # Try to get file at wrong path - should raise error
-        with pytest.raises(Exception):  # Could be ContentNotFoundError or similar
+        with pytest.raises(ContentNotFoundError):
             integration_stash.get("/nonexistent/file.txt")
 
     def test_delete_content_at_root(
@@ -504,8 +503,12 @@ class TestIntegrationTagFiltering:
     ) -> None:
         """Upload files with tags and filter by tag in query."""
         # Upload with different tags to root
-        result1 = integration_stash.upload(sample_text_file, target="/", tags=["documentation", "readme"])
-        result2 = integration_stash.upload(sample_json_file, target="/", tags=["config", "settings"])
+        result1 = integration_stash.upload(
+            sample_text_file, target="/", tags=["documentation", "readme"]
+        )
+        result2 = integration_stash.upload(
+            sample_json_file, target="/", tags=["config", "settings"]
+        )
         assert result1.path == f"/{sample_text_file.name}"
         assert result2.path == f"/{sample_json_file.name}"
 
@@ -529,8 +532,12 @@ class TestIntegrationTagFiltering:
     ) -> None:
         """Query with multiple tags uses OR logic (any match)."""
         # Upload with different tags to folders
-        result1 = integration_stash.upload(sample_text_file, target="/docs/", tags=["type-a", "category-1"])
-        result2 = integration_stash.upload(sample_json_file, target="/config/", tags=["type-b", "category-2"])
+        result1 = integration_stash.upload(
+            sample_text_file, target="/docs/", tags=["type-a", "category-1"]
+        )
+        result2 = integration_stash.upload(
+            sample_json_file, target="/config/", tags=["type-b", "category-2"]
+        )
         assert result1.path == f"/docs/{sample_text_file.name}"
         assert result2.path == f"/config/{sample_json_file.name}"
 

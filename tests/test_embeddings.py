@@ -425,9 +425,7 @@ class TestEmbedDocxPages:
 class TestEmbedFileChunked:
     """Tests for embed_file_chunked method."""
 
-    def test_pdf_returns_multiple_chunks(
-        self, mock_bedrock: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_pdf_returns_multiple_chunks(self, mock_bedrock: MagicMock, tmp_path: Path) -> None:
         """PDF file returns multiple page embeddings."""
         import fitz
 
@@ -460,9 +458,7 @@ class TestEmbedFileChunked:
         assert result.is_single_chunk
         assert result.chunks[0].chunk_type.value == "file"
 
-    def test_docx_returns_page_chunks(
-        self, mock_bedrock: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_docx_returns_page_chunks(self, mock_bedrock: MagicMock, tmp_path: Path) -> None:
         """DOCX file returns page-based chunks."""
         import docx
 

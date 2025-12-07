@@ -409,9 +409,7 @@ class SemStash:
 
         # Check if content type is supported for embedding
         if not is_supported_content_type(actual_content_type):
-            raise UnsupportedContentTypeError(
-                f"Cannot embed content type: {actual_content_type}"
-            )
+            raise UnsupportedContentTypeError(f"Cannot embed content type: {actual_content_type}")
 
         # Generate embeddings (may produce multiple for multi-page documents)
         # Pass bucket for async segmentation of large text/audio/video files

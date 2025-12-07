@@ -37,6 +37,7 @@ dependencies = [
     "openpyxl>=3.1.0",
     # Document to Markdown conversion
     "markitdown[pdf,docx,pptx,xlsx]>=0.1.0",
+    "urllib3>=2.6.0",
 ]
 
 [project.optional-dependencies]

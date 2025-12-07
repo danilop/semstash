@@ -6,15 +6,20 @@ Supports configurable dimensions (256, 384, 1024, 3072).
 Document support:
 - PDF: Rendered to image using PyMuPDF, embedded with DOCUMENT_IMAGE detail level
   - Multi-page: Each page rendered and embedded separately
-- DOCX: Text extracted using python-docx, embedded as text
-- PPTX: Text extracted using python-pptx, embedded as text
-  - Multi-slide: Each slide extracted and embedded separately
+- DOCX: Rendered to image using PyMuPDF, embedded with DOCUMENT_IMAGE detail level
+  - Multi-page: Each page rendered and embedded separately
+- PPTX: Rendered to image using PyMuPDF, embedded with DOCUMENT_IMAGE detail level
+  - Multi-slide: Each slide rendered and embedded separately
 - XLSX: Converted to CSV text using openpyxl, embedded as text
 
 Chunking support:
 - PDF: One embedding per page (DOCUMENT_IMAGE detail level)
-- PPTX: One embedding per slide (text extraction)
-- Text/DOCX/XLSX: Single embedding with truncation (async segmentation planned)
+- DOCX: One embedding per page (DOCUMENT_IMAGE detail level)
+- PPTX: One embedding per slide (DOCUMENT_IMAGE detail level)
+- Large text (>50KB): Segmented via Nova Async API
+- Large audio (>5MB): Segmented via Nova Async API (time-based segments)
+- Large video (>10MB): Segmented via Nova Async API (time-based segments)
+- Other types: Single embedding
 """
 
 import base64
@@ -42,6 +47,7 @@ from semstash.config import (
     DEFAULT_MEDIA_SEGMENT_SECONDS,
     DEFAULT_REGION,
     DEFAULT_TEXT_SEGMENT_CHARS,
+    MAX_MEDIA_SEGMENT_SECONDS,
     MAX_TEXT_SEGMENT_CHARS,
     MIN_MEDIA_SEGMENT_SECONDS,
     MIN_TEXT_SEGMENT_CHARS,
@@ -469,16 +475,16 @@ class EmbeddingGenerator:
         return "\n".join(text_parts)
 
     def embed_pptx_slides(self, pptx_data: bytes) -> FileEmbeddings:
-        """Generate embeddings for all PPTX slides.
+        """Generate embeddings for all PPTX slides by rendering each as an image.
 
-        Extracts text from each slide and generates a separate embedding.
-        Slides with no text content are skipped.
+        Uses PyMuPDF to render each slide to an image and embeds with
+        DOCUMENT_IMAGE detail level for optimal text and visual recognition.
 
         Args:
             pptx_data: Raw PPTX bytes.
 
         Returns:
-            FileEmbeddings containing one ChunkEmbedding per slide with text.
+            FileEmbeddings containing one ChunkEmbedding per slide.
 
         Raises:
             EmbeddingError: If embedding generation fails.
@@ -490,35 +496,32 @@ class EmbeddingGenerator:
                 print(f"  Slide {chunk.chunk_index}: {len(chunk.embedding)} dims")
         """
         try:
-            prs = Presentation(io.BytesIO(pptx_data))
-            total_slides = len(prs.slides)
-
-            if total_slides == 0:
+            # PyMuPDF can open PPTX files directly
+            doc = fitz.open(stream=pptx_data, filetype="pptx")
+            if doc.page_count == 0:
                 raise EmbeddingError("Presentation has no slides")
 
+            total_slides = doc.page_count
             chunks: list[ChunkEmbedding] = []
 
-            for slide_num, slide in enumerate(prs.slides, 1):
-                slide_text = self._extract_slide_text(slide)
+            for slide_num in range(total_slides):
+                # Render slide to PNG at 2x resolution for better recognition
+                pix = doc[slide_num].get_pixmap(matrix=fitz.Matrix(2, 2))
+                image_data = pix.tobytes("png")
 
-                # Skip slides with no text content
-                if not slide_text.strip():
-                    continue
-
-                # Generate embedding for this slide's text
-                embedding = self.embed_text(slide_text)
+                # Generate embedding using DOCUMENT_IMAGE detail level
+                embedding = self._embed_document_image(image_data)
 
                 chunks.append(
                     ChunkEmbedding(
                         chunk_type=ChunkType.SLIDE,
-                        chunk_index=slide_num,  # 1-indexed, preserves original slide number
+                        chunk_index=slide_num + 1,  # 1-indexed
                         total_chunks=total_slides,
                         embedding=embedding,
                     )
                 )
 
-            if not chunks:
-                raise EmbeddingError("Presentation contains no text content")
+            doc.close()
 
             return FileEmbeddings(
                 source_file="",  # Will be set by caller
@@ -531,23 +534,17 @@ class EmbeddingGenerator:
         except Exception as e:
             raise EmbeddingError(f"Failed to embed PPTX slides: {e}") from e
 
-    def embed_docx_pages(
-        self,
-        docx_data: bytes,
-        chars_per_page: int = 3000,
-    ) -> FileEmbeddings:
-        """Generate embeddings for DOCX document by logical pages.
+    def embed_docx_pages(self, docx_data: bytes) -> FileEmbeddings:
+        """Generate embeddings for DOCX document by rendering each page as an image.
 
-        Since DOCX doesn't have physical pages like PDF, this method groups
-        paragraphs into page-like chunks based on character count.
-        Each chunk is embedded separately for better semantic coverage.
+        Uses PyMuPDF to render each page to an image and embeds with
+        DOCUMENT_IMAGE detail level for optimal text recognition, similar to PDF handling.
 
         Args:
             docx_data: Raw DOCX bytes.
-            chars_per_page: Approximate characters per logical page (default 3000).
 
         Returns:
-            FileEmbeddings containing one ChunkEmbedding per logical page.
+            FileEmbeddings containing one ChunkEmbedding per page.
 
         Raises:
             EmbeddingError: If embedding generation fails.
@@ -559,50 +556,32 @@ class EmbeddingGenerator:
                 print(f"  Page {chunk.chunk_index}: {len(chunk.embedding)} dims")
         """
         try:
-            doc = docx.Document(io.BytesIO(docx_data))
+            # PyMuPDF can open DOCX files directly
+            doc = fitz.open(stream=docx_data, filetype="docx")
+            if doc.page_count == 0:
+                raise EmbeddingError("Document has no pages")
 
-            # Extract all paragraphs with text
-            paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
-
-            if not paragraphs:
-                raise EmbeddingError("Document contains no text")
-
-            # Group paragraphs into logical pages
-            pages: list[str] = []
-            current_page: list[str] = []
-            current_chars = 0
-
-            for para in paragraphs:
-                para_len = len(para)
-
-                # If adding this paragraph exceeds the limit, start a new page
-                if current_chars + para_len > chars_per_page and current_page:
-                    pages.append("\n\n".join(current_page))
-                    current_page = [para]
-                    current_chars = para_len
-                else:
-                    current_page.append(para)
-                    current_chars += para_len
-
-            # Don't forget the last page
-            if current_page:
-                pages.append("\n\n".join(current_page))
-
-            # Generate embeddings for each page
-            total_pages = len(pages)
+            total_pages = doc.page_count
             chunks: list[ChunkEmbedding] = []
 
-            for page_num, page_text in enumerate(pages, 1):
-                embedding = self.embed_text(page_text)
+            for page_num in range(total_pages):
+                # Render page to PNG at 2x resolution for better text recognition
+                pix = doc[page_num].get_pixmap(matrix=fitz.Matrix(2, 2))
+                image_data = pix.tobytes("png")
+
+                # Generate embedding using DOCUMENT_IMAGE detail level
+                embedding = self._embed_document_image(image_data)
 
                 chunks.append(
                     ChunkEmbedding(
                         chunk_type=ChunkType.PAGE,
-                        chunk_index=page_num,
+                        chunk_index=page_num + 1,  # 1-indexed
                         total_chunks=total_pages,
                         embedding=embedding,
                     )
                 )
+
+            doc.close()
 
             return FileEmbeddings(
                 source_file="",  # Will be set by caller
@@ -923,6 +902,7 @@ class EmbeddingGenerator:
         output_s3_uri: str,
         modality: str,
         segment_config: dict[str, Any],
+        media_format: str | None = None,
     ) -> str:
         """Start an async embedding job via Nova API.
 
@@ -931,6 +911,7 @@ class EmbeddingGenerator:
             output_s3_uri: S3 URI prefix for output.
             modality: Content modality ("text", "audio", "video").
             segment_config: Segmentation configuration.
+            media_format: Format for audio/video (e.g., "mp3", "mp4").
 
         Returns:
             Job ID from Nova.
@@ -938,13 +919,32 @@ class EmbeddingGenerator:
         Raises:
             EmbeddingError: If job submission fails.
         """
+        # Build modality-specific params with source and segmentation config
+        modality_params: dict[str, Any] = {
+            "source": {"s3Location": {"uri": input_s3_uri}},
+            "segmentationConfig": segment_config,
+        }
+
+        # Text requires truncationMode
+        if modality == "text":
+            modality_params["truncationMode"] = "END"
+
+        # Video requires embeddingMode and format
+        if modality == "video":
+            modality_params["embeddingMode"] = "AUDIO_VIDEO_COMBINED"
+            if media_format:
+                modality_params["format"] = media_format
+
+        # Audio requires format
+        if modality == "audio" and media_format:
+            modality_params["format"] = media_format
+
         request_body: dict[str, Any] = {
             "taskType": "SEGMENTED_EMBEDDING",
             "segmentedEmbeddingParams": {
                 "embeddingPurpose": "GENERIC_INDEX",
                 "embeddingDimension": self.dimension,
-                "segmentationConfig": segment_config,
-                modality: {"source": {"s3Uri": input_s3_uri}},
+                modality: modality_params,
             },
         }
 
@@ -1029,16 +1029,23 @@ class EmbeddingGenerator:
             if not contents:
                 raise EmbeddingError(f"No output files found at {output_s3_uri}")
 
-            # Find the output JSONL file (usually named output.jsonl or similar)
+            # Find the embedding JSONL file (e.g., embedding-text.jsonl)
             jsonl_key = None
             for obj in contents:
-                if obj["Key"].endswith(".jsonl") or obj["Key"].endswith(".json"):
-                    jsonl_key = obj["Key"]
+                key = obj["Key"]
+                if key.endswith(".jsonl") and "embedding-" in key:
+                    jsonl_key = key
                     break
 
             if not jsonl_key:
-                # If no .jsonl, try the first file
-                jsonl_key = contents[0]["Key"]
+                # Fallback: try any .jsonl file
+                for obj in contents:
+                    if obj["Key"].endswith(".jsonl"):
+                        jsonl_key = obj["Key"]
+                        break
+
+            if not jsonl_key:
+                raise EmbeddingError(f"No JSONL output file found at {output_s3_uri}")
 
             # Read and parse the file
             obj_response = s3.get_object(Bucket=bucket, Key=jsonl_key)
@@ -1174,7 +1181,7 @@ class EmbeddingGenerator:
             content_type: MIME type of audio.
             s3_bucket: S3 bucket for temporary input/output.
             s3_prefix: Prefix for temporary files.
-            segment_seconds: Duration per segment in seconds (min 5).
+            segment_seconds: Duration per segment in seconds (5-30).
             source_file: Original filename for result metadata.
 
         Returns:
@@ -1193,9 +1200,10 @@ class EmbeddingGenerator:
             )
             print(f"Generated {result.total_chunks} audio segment embeddings")
         """
-        if segment_seconds < MIN_MEDIA_SEGMENT_SECONDS:
+        if not MIN_MEDIA_SEGMENT_SECONDS <= segment_seconds <= MAX_MEDIA_SEGMENT_SECONDS:
             raise ValueError(
-                f"segment_seconds must be >= {MIN_MEDIA_SEGMENT_SECONDS}, got {segment_seconds}"
+                f"segment_seconds must be {MIN_MEDIA_SEGMENT_SECONDS}-{MAX_MEDIA_SEGMENT_SECONDS}, "
+                f"got {segment_seconds}"
             )
 
         audio_format = AUDIO_FORMAT_MAP.get(content_type, "mp3")
@@ -1214,7 +1222,7 @@ class EmbeddingGenerator:
             # Start async job with audio-specific config
             segment_config = {"durationSeconds": segment_seconds}
             invocation_arn = self._start_async_invoke(
-                input_s3_uri, output_s3_uri, "audio", segment_config
+                input_s3_uri, output_s3_uri, "audio", segment_config, media_format=audio_format
             )
 
             # Poll for completion
@@ -1270,7 +1278,7 @@ class EmbeddingGenerator:
             content_type: MIME type of video.
             s3_bucket: S3 bucket for temporary input/output.
             s3_prefix: Prefix for temporary files.
-            segment_seconds: Duration per segment in seconds (min 5).
+            segment_seconds: Duration per segment in seconds (5-30).
             source_file: Original filename for result metadata.
 
         Returns:
@@ -1285,13 +1293,14 @@ class EmbeddingGenerator:
                 video_bytes,
                 "video/mp4",
                 s3_bucket="my-bucket",
-                segment_seconds=60,
+                segment_seconds=30,
             )
             print(f"Generated {result.total_chunks} video segment embeddings")
         """
-        if segment_seconds < MIN_MEDIA_SEGMENT_SECONDS:
+        if not MIN_MEDIA_SEGMENT_SECONDS <= segment_seconds <= MAX_MEDIA_SEGMENT_SECONDS:
             raise ValueError(
-                f"segment_seconds must be >= {MIN_MEDIA_SEGMENT_SECONDS}, got {segment_seconds}"
+                f"segment_seconds must be {MIN_MEDIA_SEGMENT_SECONDS}-{MAX_MEDIA_SEGMENT_SECONDS}, "
+                f"got {segment_seconds}"
             )
 
         video_format = VIDEO_FORMAT_MAP.get(content_type, "mp4")
@@ -1310,7 +1319,7 @@ class EmbeddingGenerator:
             # Start async job with video-specific config
             segment_config = {"durationSeconds": segment_seconds}
             invocation_arn = self._start_async_invoke(
-                input_s3_uri, output_s3_uri, "video", segment_config
+                input_s3_uri, output_s3_uri, "video", segment_config, media_format=video_format
             )
 
             # Poll for completion
@@ -1371,13 +1380,21 @@ class EmbeddingGenerator:
         chunks: list[ChunkEmbedding] = []
 
         for i, result in enumerate(raw_results, 1):
-            # Extract embedding from result
-            # Nova async output format: {"embeddings": [{"embedding": [...]}]}
-            embeddings_data = result.get("embeddings", [])
-            if not embeddings_data:
-                raise EmbeddingError(f"No embeddings in result {i}")
+            # Check status
+            status = result.get("status", "SUCCESS")
+            if status == "FAILURE":
+                reason = result.get("failureReason", "Unknown")
+                msg = result.get("message", "")
+                raise EmbeddingError(f"Segment {i} failed: {reason} - {msg}")
 
-            embedding = embeddings_data[0].get("embedding")
+            # New format: {"embedding": [...], "segmentMetadata": {...}}
+            embedding = result.get("embedding")
+            if not embedding:
+                # Fallback: old format {"embeddings": [{"embedding": [...]}]}
+                embeddings_data = result.get("embeddings", [])
+                if embeddings_data:
+                    embedding = embeddings_data[0].get("embedding")
+
             if not embedding:
                 raise EmbeddingError(f"No embedding vector in result {i}")
 

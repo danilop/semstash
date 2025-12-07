@@ -282,11 +282,29 @@ SemStash handles multiple content categories through [Amazon Nova Multimodal Emb
 
 **Images** are embedded visually. Supported formats include JPEG, PNG, GIF, and WebP. Nova understands the visual content, so you can search for *"red car"* or *"person smiling"* and find matching images.
 
-**Audio** files are processed for semantic content. MP3, WAV, FLAC, and OGG formats are supported. You can search recordings by their spoken content or audio characteristics.
+**Audio** files are processed for semantic content. MP3, WAV, and OGG formats are supported. You can search recordings by their spoken content or audio characteristics.
 
 **Video** content is embedded considering both visual and audio elements. MP4, WebM, MOV, and MKV formats work. Search for *"presentation with charts"* or *"outdoor interview"*.
 
-**Documents** receive special handling. PDF files are rendered as images and embedded visually, preserving layout and graphics. Word documents (`.docx`), PowerPoint presentations (`.pptx`), and Excel spreadsheets (`.xlsx`) have their text extracted and embedded, making all their content searchable.
+**Documents** receive special handling. PDF files, Word documents (`.docx`), and PowerPoint presentations (`.pptx`) are rendered page-by-page as document images using PyMuPDF, then embedded with Nova's DOCUMENT_IMAGE detail level for optimal text recognition. This preserves layout, graphics, and formatting. Excel spreadsheets (`.xlsx`) have their content converted to CSV text and embedded.
+
+### Large File Handling
+
+Amazon Nova Embeddings has input limits for the synchronous API. SemStash automatically handles larger files using Nova's asynchronous segmented embedding API, which splits content into multiple embeddings for complete semantic coverage.
+
+| Content Type | Sync API Limit | Large File Handling |
+|--------------|----------------|---------------------|
+| Text | 8,192 characters | Files >50 KB use async segmentation (10K chars/segment) |
+| Images | 25 MB (inline) | Files >25 MB can use S3 input (up to 50 MB) |
+| Audio | 30 seconds, 25 MB | Files >5 MB use async segmentation (30s segments) |
+| Video | 30 seconds, 25 MB | Files >10 MB use async segmentation (30s segments) |
+| PDF | Per-page rendering | Each page rendered and embedded separately |
+| DOCX/PPTX | Per-page rendering | Each page/slide rendered and embedded separately |
+| XLSX | Text extraction | Converted to CSV text, then embedded |
+
+For text, audio, and video, async segmentation creates multiple embeddings that together cover the entire content. This means you can search any part of a long document or recording—not just the beginning. Each segment produces its own embedding vector, all stored and searchable.
+
+Files are always stored in S3 regardless of size. The limits above apply only to embedding generation.
 
 ## Use Cases
 
@@ -325,7 +343,7 @@ semstash archive query "payment terms 90 days"
 Give AI agents persistent, searchable memory. The MCP server integrates with any MCP-compatible assistant:
 
 ```bash
-semstash mcp  # Start MCP server
+semstash mcp my-stash  # Start MCP server
 ```
 
 Agents can upload information they learn and query it later, building knowledge over time.
@@ -335,7 +353,7 @@ Agents can upload information they learn and query it later, building knowledge 
 The [Model Context Protocol](https://modelcontextprotocol.io/) server lets AI assistants use SemStash as persistent memory. Start it with:
 
 ```bash
-semstash mcp
+semstash mcp my-stash
 ```
 
 For MCP-compatible assistants, add to your configuration:
@@ -345,10 +363,7 @@ For MCP-compatible assistants, add to your configuration:
   "mcpServers": {
     "semstash": {
       "command": "semstash",
-      "args": ["mcp"],
-      "env": {
-        "SEMSTASH_BUCKET": "my-agent-memory"
-      }
+      "args": ["mcp", "my-agent-memory"]
     }
   }
 }
@@ -361,7 +376,7 @@ The MCP server exposes tools for uploading content, querying semantically, brows
 SemStash includes a browser-based interface for managing your semantic storage without using the command line. Start the server and open your browser:
 
 ```bash
-semstash web
+semstash web my-stash
 # Open http://localhost:8000/ui/
 ```
 
@@ -388,7 +403,7 @@ The web interface provides:
 For web applications or services that need programmatic HTTP access, use the REST API:
 
 ```bash
-semstash web
+semstash web my-stash
 ```
 
 The API runs at `http://localhost:8000` with interactive documentation at `/docs`. Key endpoints:
@@ -409,13 +424,10 @@ DELETE /destroy           Remove storage (irreversible)
 
 Content paths use URL encoding. For example, `/content/docs/readme.txt` gets the file at path `/docs/readme.txt`.
 
-Configure the server with environment variables:
+Configure the server with options:
 
 ```bash
-export SEMSTASH_BUCKET=my-stash
-export SEMSTASH_HOST=0.0.0.0
-export SEMSTASH_PORT=8000
-semstash web
+semstash web my-stash --host 0.0.0.0 --port 8080
 ```
 
 ## Configuration

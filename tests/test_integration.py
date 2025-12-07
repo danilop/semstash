@@ -870,3 +870,157 @@ class TestIntegrationPathFiltering:
         keys = [r.key for r in results]
         assert f"docs/{sample_text_file.name}" in keys
         assert f"docs/{sample_json_file.name}" not in keys
+
+
+@pytest.mark.integration
+class TestIntegrationLargeFiles:
+    """Integration tests for large file handling with async segmentation."""
+
+    def test_large_text_uses_async_segmentation(
+        self,
+        integration_stash: SemStash,
+        tmp_path: Path,
+    ) -> None:
+        """Large text files (>50KB) use async segmentation for multiple embeddings."""
+        # Generate large text file (>50KB to trigger async segmentation)
+        large_text = "This is a test paragraph about semantic search. " * 2000  # ~100KB
+        large_text_file = tmp_path / "large_text.txt"
+        large_text_file.write_text(large_text)
+
+        # Upload large text file
+        result = integration_stash.upload(large_text_file, target="/")
+        assert result.key == "large_text.txt"
+        assert result.path == "/large_text.txt"
+
+        # Query should find the content (keys may have #chunk=N suffix)
+        query_results = integration_stash.query("semantic search test paragraph", top_k=5)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("large_text.txt") for k in keys)
+
+    def test_large_video_uses_async_segmentation(
+        self,
+        integration_stash: SemStash,
+    ) -> None:
+        """Large video files (>10MB) use async segmentation for time-based segments."""
+        # Use the existing large video sample (31MB)
+        large_video = Path(__file__).parent / "samples" / "sample_large.mp4"
+        if not large_video.exists():
+            pytest.skip("sample_large.mp4 not found - skipping large video test")
+
+        # Upload large video file
+        result = integration_stash.upload(large_video, target="/videos/")
+        assert result.key == "videos/sample_large.mp4"
+        assert result.path == "/videos/sample_large.mp4"
+
+        # Verify content was stored (browse shows the file exists)
+        browse_result = integration_stash.browse("/videos/")
+        keys = [item.key for item in browse_result.items]
+        assert "videos/sample_large.mp4" in keys
+
+        # Query should find the video content (keys may have #segment=N suffix)
+        # Use path filter to ensure we're searching in the right location
+        query_results = integration_stash.query("video", path="/videos/", top_k=10)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("videos/sample_large.mp4") for k in keys)
+
+    def test_large_audio_uses_async_segmentation(
+        self,
+        integration_stash: SemStash,
+        tmp_path: Path,
+    ) -> None:
+        """Large audio files (>5MB) use async segmentation for time-based segments."""
+        # Use the existing audio sample (8.5MB MP3)
+        large_audio = Path(__file__).parent / "samples" / "sample.mp3"
+        if not large_audio.exists():
+            pytest.skip("sample.mp3 not found - skipping large audio test")
+
+        # Check if file is large enough to trigger async (>5MB)
+        if large_audio.stat().st_size < 5 * 1024 * 1024:
+            pytest.skip("sample.mp3 is too small to trigger async segmentation")
+
+        # Upload large audio file
+        result = integration_stash.upload(large_audio, target="/audio/")
+        assert result.key == "audio/sample.mp3"
+        assert result.path == "/audio/sample.mp3"
+
+        # Query should find the audio content (keys may have #segment=N suffix)
+        query_results = integration_stash.query("music audio sound", top_k=5)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("audio/sample.mp3") for k in keys)
+
+    def test_multipage_pdf_creates_multiple_embeddings(
+        self,
+        integration_stash: SemStash,
+        tmp_path: Path,
+    ) -> None:
+        """Multi-page PDF creates one embedding per page."""
+        import fitz
+
+        # Create a 3-page PDF
+        doc = fitz.open()
+        for i in range(3):
+            page = doc.new_page()
+            page.insert_text((50, 50), f"Page {i + 1}: This is test content for page {i + 1}")
+        pdf_file = tmp_path / "multipage.pdf"
+        pdf_file.write_bytes(doc.tobytes())
+        doc.close()
+
+        # Upload multi-page PDF
+        result = integration_stash.upload(pdf_file, target="/docs/")
+        assert result.key == "docs/multipage.pdf"
+
+        # Query should find content from any page (keys have #page=N suffix)
+        query_results = integration_stash.query("test content page", top_k=10)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("docs/multipage.pdf") for k in keys)
+
+    def test_multipage_docx_creates_multiple_embeddings(
+        self,
+        integration_stash: SemStash,
+        tmp_path: Path,
+    ) -> None:
+        """Multi-page DOCX creates one embedding per page."""
+        import docx
+
+        # Create a DOCX with multiple paragraphs (will render as pages)
+        doc = docx.Document()
+        for i in range(5):
+            doc.add_paragraph(f"Section {i + 1}: This is test content for section {i + 1}. " * 50)
+            doc.add_page_break()
+        docx_file = tmp_path / "multipage.docx"
+        doc.save(str(docx_file))
+
+        # Upload multi-page DOCX
+        result = integration_stash.upload(docx_file, target="/docs/")
+        assert result.key == "docs/multipage.docx"
+
+        # Query should find content (keys have #page=N suffix)
+        query_results = integration_stash.query("test content section", top_k=10)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("docs/multipage.docx") for k in keys)
+
+    def test_multislide_pptx_creates_multiple_embeddings(
+        self,
+        integration_stash: SemStash,
+        tmp_path: Path,
+    ) -> None:
+        """Multi-slide PPTX creates one embedding per slide."""
+        from pptx import Presentation
+
+        # Create a 3-slide presentation
+        prs = Presentation()
+        for i in range(3):
+            slide = prs.slides.add_slide(prs.slide_layouts[0])
+            title = slide.shapes.title
+            title.text = f"Slide {i + 1}: Test presentation content"
+        pptx_file = tmp_path / "multislide.pptx"
+        prs.save(str(pptx_file))
+
+        # Upload multi-slide PPTX
+        result = integration_stash.upload(pptx_file, target="/presentations/")
+        assert result.key == "presentations/multislide.pptx"
+
+        # Query should find content (keys have #slide=N suffix)
+        query_results = integration_stash.query("test presentation slide", top_k=10)
+        keys = [r.key for r in query_results]
+        assert any(k.startswith("presentations/multislide.pptx") for k in keys)

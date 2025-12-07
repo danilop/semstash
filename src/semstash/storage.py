@@ -842,8 +842,9 @@ class VectorStorage:
             results = []
             for match in response.get("vectors", []):
                 # Convert distance to similarity score (1 - distance for cosine)
+                # Clamp to [0, 1] since cosine distance can exceed 1 for opposite vectors
                 distance = match.get("distance", 0)
-                score = 1 - distance
+                score = max(0.0, min(1.0, 1 - distance))
 
                 results.append(
                     SearchResult(

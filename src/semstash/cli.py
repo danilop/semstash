@@ -1055,19 +1055,48 @@ def destroy(
 
 
 @app.command()
-def mcp() -> None:
+def web(
+    stash: Annotated[str, typer.Argument(help="Stash name")],
+    host: Annotated[  # noqa: S104 - intentional for server
+        str, typer.Option("--host", "-h", help="Host to bind to")
+    ] = "0.0.0.0",  # nosec B104 - intentional for server
+    port: Annotated[int, typer.Option("--port", "-p", help="Port to listen on")] = 8000,
+) -> None:
+    """Start the web interface and REST API.
+
+    Examples:
+        semstash web my-stash
+        semstash web my-stash --port 8080
+    """
+    import os
+
+    import uvicorn
+
+    os.environ["SEMSTASH_BUCKET"] = stash
+    from semstash.web import app as web_app
+
+    console.print(f"Starting web server at http://{host}:{port}/ui/")
+    uvicorn.run(web_app, host=host, port=port)
+
+
+@app.command()
+def mcp(
+    stash: Annotated[str | None, typer.Argument(help="Stash name (or set SEMSTASH_BUCKET)")] = None,
+) -> None:
     """Start the MCP (Model Context Protocol) server.
 
-    This starts the semstash MCP server for integration with AI agents.
-    Configuration is done via environment variables:
-
-    - SEMSTASH_BUCKET: S3 bucket name (required)
-    - SEMSTASH_REGION: AWS region (default: us-east-1)
-    - SEMSTASH_DIMENSION: Embedding dimension (default: 3072)
-
-    Example:
+    Examples:
+        semstash mcp my-stash
         SEMSTASH_BUCKET=my-stash semstash mcp
     """
+    import os
+
+    if stash:
+        os.environ["SEMSTASH_BUCKET"] = stash
+
+    if not os.environ.get("SEMSTASH_BUCKET"):
+        error_exit("Stash required. Provide stash name or set SEMSTASH_BUCKET.")
+
     from semstash.mcp_server import main as mcp_main
 
     mcp_main()

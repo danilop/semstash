@@ -219,6 +219,13 @@ def stats() -> str:
 
 def main() -> None:
     """Run the MCP server."""
+    import os
+    import sys
+
+    # Accept bucket as command-line argument
+    if len(sys.argv) > 1:
+        os.environ["SEMSTASH_BUCKET"] = sys.argv[1]
+
     mcp.run(transport="stdio")
 
 

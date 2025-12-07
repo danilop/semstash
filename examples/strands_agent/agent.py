@@ -1,6 +1,6 @@
 """SemStash Agent - AI agent for semantic storage using Strands SDK."""
 
-import os
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -10,21 +10,21 @@ from strands.tools.mcp import MCPClient
 
 
 @contextmanager
-def semstash_agent(
-    bucket: str, region: str = "us-east-1", dimension: int = 3072
-) -> Generator[Agent]:
-    """Create an AI agent for semantic storage via semstash MCP server."""
-    env = {
-        **os.environ,
-        "SEMSTASH_BUCKET": bucket,
-        "SEMSTASH_REGION": region,
-        "SEMSTASH_DIMENSION": str(dimension),
-    }
-    mcp_client = MCPClient(
-        lambda: stdio_client(
-            StdioServerParameters(command="uvx", args=["semstash", "mcp"], env=env)
+def semstash_agent(bucket: str, use_local: bool = True) -> Generator[Agent]:
+    """Create an AI agent for semantic storage via semstash MCP server.
+
+    Args:
+        bucket: The stash/bucket name to use.
+        use_local: If True, use local Python module. If False, use uvx.
+    """
+    if use_local:
+        params = StdioServerParameters(
+            command=sys.executable, args=["-m", "semstash.mcp_server", bucket]
         )
-    )
+    else:
+        params = StdioServerParameters(command="uvx", args=["semstash", "mcp", bucket])
+
+    mcp_client = MCPClient(lambda: stdio_client(params))
 
     with mcp_client:
         tools = mcp_client.list_tools_sync()

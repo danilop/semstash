@@ -12,7 +12,7 @@ Usage:
 
 import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import gettempdir
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -334,12 +334,12 @@ async def upload(
     try:
         stash = get_stash()
 
-        # Save uploaded file temporarily
-        suffix = Path(file.filename or "file").suffix
-        with NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
+        # Save uploaded file temporarily, preserving original filename
+        original_filename = file.filename or "file"
+        tmp_dir = Path(gettempdir())
+        tmp_path = tmp_dir / original_filename
+        content = await file.read()
+        tmp_path.write_bytes(content)
 
         try:
             # Parse tags if provided

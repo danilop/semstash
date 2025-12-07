@@ -47,9 +47,10 @@ DEFAULT_TEXT_SEGMENT_CHARS = 10000  # 10K chars per segment (good for semantic c
 MAX_TEXT_SEGMENT_CHARS = 50000  # Nova's maximum
 MIN_TEXT_SEGMENT_CHARS = 300  # Nova's minimum
 
-# Audio/Video segmentation: duration per segment in seconds (Nova limit: 5s min)
-DEFAULT_MEDIA_SEGMENT_SECONDS = 60  # 1 minute per segment
+# Audio/Video segmentation: duration per segment in seconds (Nova limit: 5-30s)
+DEFAULT_MEDIA_SEGMENT_SECONDS = 30  # Max allowed by Nova
 MIN_MEDIA_SEGMENT_SECONDS = 5  # Nova's minimum
+MAX_MEDIA_SEGMENT_SECONDS = 30  # Nova's maximum
 
 # Async job polling configuration
 ASYNC_POLL_INTERVAL_SECONDS = 2.0  # Initial poll interval

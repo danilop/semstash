@@ -2134,7 +2134,7 @@ def search(
 
 ### Transport Options
 
-**stdio (for Claude Desktop):**
+**stdio (for MCP clients):**
 ```bash
 semstash-mcp
 ```

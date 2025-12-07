@@ -54,7 +54,7 @@ semstash costs estimate-upload ./large-video.mp4
 # Start the MCP server
 semstash-mcp
 
-# Or add to Claude Desktop config:
+# Or add to your MCP client config:
 # "semstash": {"command": "semstash-mcp"}
 ```
 

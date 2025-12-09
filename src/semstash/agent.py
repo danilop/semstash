@@ -39,7 +39,7 @@ from strands_tools import (  # type: ignore[import-untyped]
 )
 
 # Default model: Amazon Nova 2 Lite via global inference profile
-DEFAULT_MODEL_ID = "us.amazon.nova-lite-v1:0"
+DEFAULT_MODEL_ID = "global.amazon.nova-2-lite-v1:0"
 
 # System prompt defining agent capabilities
 SYSTEM_PROMPT = """You are a helpful AI assistant with access to semantic storage (SemStash).

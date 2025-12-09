@@ -62,7 +62,7 @@ class TestDefaultConstants:
 
     def test_default_model_id(self) -> None:
         """Test that default model ID is set."""
-        assert DEFAULT_MODEL_ID == "us.amazon.nova-lite-v1:0"
+        assert DEFAULT_MODEL_ID == "global.amazon.nova-2-lite-v1:0"
 
     def test_system_prompt_content(self) -> None:
         """Test that system prompt contains key instructions."""
@@ -327,6 +327,56 @@ class TestSemStashAgentChat:
             assert events[0]["type"] == "data"
             assert events[0]["data"] == "event1"
             assert events[1]["data"] == "event2"
+
+    @patch("semstash.agent.MCPClient")
+    @patch("semstash.agent.BedrockModel")
+    @patch("semstash.agent.Agent")
+    def test_chat_stream_events_are_dicts_not_objects(
+        self,
+        mock_agent_class: MagicMock,
+        mock_model_class: MagicMock,
+        mock_mcp_class: MagicMock,
+    ) -> None:
+        """Test that chat_stream yields dicts (not objects with attributes).
+
+        This ensures CLI and web consumers can use dict access like
+        event.get("data") or "data" in event, NOT hasattr(event, "data").
+        """
+        # Setup mocks
+        mock_mcp_instance = MagicMock()
+        mock_mcp_instance.list_tools_sync.return_value = []
+        mock_mcp_class.return_value = mock_mcp_instance
+
+        mock_model_class.return_value = MagicMock()
+
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.callback_handler = None
+
+        # Simulate callback invocation during agent call
+        def simulate_agent_call(message: str) -> MagicMock:
+            handler = mock_agent_instance.callback_handler
+            if handler:
+                handler(data="text chunk")
+            return MagicMock()
+
+        mock_agent_instance.side_effect = simulate_agent_call
+        mock_agent_class.return_value = mock_agent_instance
+
+        with SemStashAgent(bucket="test-bucket") as agent:
+            events = list(agent.chat_stream("Hi"))
+            assert len(events) == 1
+            event = events[0]
+
+            # Events MUST be dicts, not objects
+            assert isinstance(event, dict), "Events must be dicts, not objects"
+
+            # Dict access patterns that CLI/web use
+            assert "data" in event, "Events must support 'key in event' syntax"
+            assert event.get("data") == "text chunk", "Events must support event.get()"
+            assert event["data"] == "text chunk", "Events must support event['key']"
+
+            # This would fail if events were objects instead of dicts
+            # (which was the bug - CLI used hasattr(event, "data") which returns False for dicts)
 
 
 class TestSemStashAgentResetConversation:

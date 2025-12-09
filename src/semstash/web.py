@@ -286,7 +286,7 @@ class AgentResetResponse(SuccessResponse):
 # --- Agent Session Management ---
 
 # Default model for agent
-DEFAULT_AGENT_MODEL = "us.amazon.nova-lite-v1:0"
+DEFAULT_AGENT_MODEL = "global.amazon.nova-2-lite-v1:0"
 
 # Session TTL in seconds (30 minutes)
 AGENT_SESSION_TTL = 30 * 60
@@ -853,18 +853,11 @@ async def agent_stream(
 
             # Stream response
             for event in session.agent.chat_stream(request.message):
-                # Handle different event types from Strands
-                if hasattr(event, "data"):
-                    chunk = event.data
+                # Events are dicts - check for "data" key (text chunks)
+                if isinstance(event, dict) and "data" in event:
+                    chunk = event["data"]
                     if isinstance(chunk, str) and chunk:
                         yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                elif hasattr(event, "content"):
-                    # Handle content blocks
-                    for block in event.content:
-                        if isinstance(block, dict) and "text" in block:
-                            chunk = block["text"]
-                            if chunk:
-                                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 

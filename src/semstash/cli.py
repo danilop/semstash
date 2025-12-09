@@ -1118,7 +1118,7 @@ def agent(
     model: Annotated[
         str,
         typer.Option("--model", "-m", help="Bedrock model ID"),
-    ] = "us.amazon.nova-lite-v1:0",
+    ] = "global.amazon.nova-2-lite-v1:0",
     region: RegionOption = DEFAULT_REGION,
 ) -> None:
     """Start an interactive AI agent session.
@@ -1195,19 +1195,12 @@ def agent(
                     response_text = ""
                     try:
                         for event in agent_instance.chat_stream(user_input):
-                            # Handle different event types from Strands
-                            if hasattr(event, "data"):
-                                chunk = event.data
+                            # Events are dicts - check for "data" key (text chunks)
+                            if isinstance(event, dict) and "data" in event:
+                                chunk = event["data"]
                                 if isinstance(chunk, str):
                                     response_text += chunk
-                                    console.print(chunk, end="")
-                            elif hasattr(event, "content"):
-                                # Handle content blocks
-                                for block in event.content:
-                                    if isinstance(block, dict) and "text" in block:
-                                        chunk = block["text"]
-                                        response_text += chunk
-                                        console.print(chunk, end="")
+                                    print(chunk, end="", flush=True)
                     except Exception as stream_err:
                         # Fallback to non-streaming if streaming fails
                         if not response_text:

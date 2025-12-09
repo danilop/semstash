@@ -10,16 +10,20 @@ Usage:
     python -m semstash.web
 """
 
+import asyncio
+import contextlib
 import os
+import time
+import uuid
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from semstash.client import SemStash
 from semstash.config import (
@@ -193,6 +197,10 @@ class StatsResponse(SuccessResponse):
     storage_bytes: int
     storage_gb: float
     dimension: int
+    bucket: str
+    vector_bucket: str
+    index_name: str
+    region: str
 
 
 class CheckResponse(SuccessResponse):
@@ -236,6 +244,98 @@ class HealthResponse(BaseModel):
     status: str
     bucket: str | None
     region: str
+
+
+# --- Agent Response Models ---
+
+
+class AgentSessionResponse(SuccessResponse):
+    """Agent session response."""
+
+    session_id: str
+    created_at: str
+    model_id: str
+
+
+class AgentChatRequest(BaseModel):
+    """Agent chat request."""
+
+    message: str = Field(..., min_length=1, description="Message to send to the agent")
+
+
+class AgentToolCall(BaseModel):
+    """Tool call made by the agent."""
+
+    name: str
+    arguments: dict[str, Any] | None = None
+
+
+class AgentChatResponse(SuccessResponse):
+    """Agent chat response (non-streaming)."""
+
+    response: str
+    tool_calls: list[AgentToolCall] = []
+
+
+class AgentResetResponse(SuccessResponse):
+    """Agent reset response."""
+
+    message: str
+
+
+# --- Agent Session Management ---
+
+# Default model for agent
+DEFAULT_AGENT_MODEL = "us.amazon.nova-lite-v1:0"
+
+# Session TTL in seconds (30 minutes)
+AGENT_SESSION_TTL = 30 * 60
+
+
+class AgentSession:
+    """Container for an agent session with TTL tracking."""
+
+    def __init__(self, session_id: str, model_id: str) -> None:
+        self.session_id = session_id
+        self.model_id = model_id
+        self.created_at = time.time()
+        self.last_activity = time.time()
+        self.agent: Any = None  # Lazy initialization
+        self._lock = asyncio.Lock()
+
+    def touch(self) -> None:
+        """Update last activity timestamp."""
+        self.last_activity = time.time()
+
+    def is_expired(self) -> bool:
+        """Check if session has expired."""
+        return time.time() - self.last_activity > AGENT_SESSION_TTL
+
+
+# Global agent sessions store
+_agent_sessions: dict[str, AgentSession] = {}
+
+
+def _cleanup_expired_sessions() -> None:
+    """Remove expired sessions."""
+    expired = [sid for sid, session in _agent_sessions.items() if session.is_expired()]
+    for sid in expired:
+        session = _agent_sessions.pop(sid, None)
+        if session and session.agent:
+            # Agent cleanup happens via context manager in the agent module
+            pass
+
+
+def _get_agent_session(session_id: str) -> AgentSession:
+    """Get an agent session by ID, cleaning up expired sessions first."""
+    _cleanup_expired_sessions()
+
+    session = _agent_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    session.touch()
+    return session
 
 
 # --- Endpoints ---
@@ -526,7 +626,7 @@ async def browse(
 
 @app.get("/stats", response_model=StatsResponse)
 async def stats() -> StatsResponse:
-    """Get storage statistics."""
+    """Get storage statistics and AWS resource information."""
     try:
         stash = get_stash()
         result = stash.get_stats()
@@ -537,6 +637,10 @@ async def stats() -> StatsResponse:
             storage_bytes=result.storage_bytes,
             storage_gb=result.storage_gb,
             dimension=result.dimension,
+            bucket=result.bucket,
+            vector_bucket=result.vector_bucket,
+            index_name=result.index_name,
+            region=result.region,
         )
     except NotInitializedError:
         raise HTTPException(
@@ -632,6 +736,177 @@ async def destroy(
         ) from None
     except SemStashError as e:
         raise HTTPException(status_code=500, detail=str(e)) from None
+
+
+# --- Agent Endpoints ---
+
+
+@app.post("/agent/session", response_model=AgentSessionResponse)
+async def create_agent_session(
+    model_id: str = Form(DEFAULT_AGENT_MODEL),
+) -> AgentSessionResponse:
+    """Create a new agent session.
+
+    The agent provides conversational access to the stash for searching,
+    browsing, and getting summaries of stored content.
+    """
+    from datetime import datetime
+
+    # Clean up expired sessions first
+    _cleanup_expired_sessions()
+
+    # Create new session
+    session_id = str(uuid.uuid4())
+    session = AgentSession(session_id=session_id, model_id=model_id)
+    _agent_sessions[session_id] = session
+
+    return AgentSessionResponse(
+        session_id=session_id,
+        created_at=datetime.fromtimestamp(session.created_at).isoformat(),
+        model_id=model_id,
+    )
+
+
+@app.post("/agent/chat/{session_id}", response_model=AgentChatResponse)
+async def agent_chat(
+    session_id: str,
+    request: AgentChatRequest,
+) -> AgentChatResponse:
+    """Send a message to the agent (non-streaming).
+
+    Use /agent/stream/{session_id} for streaming responses.
+    """
+    from semstash.agent import SemStashAgent
+
+    session = _get_agent_session(session_id)
+
+    # Get bucket from environment
+    bucket = os.environ.get("SEMSTASH_BUCKET")
+    if not bucket:
+        raise HTTPException(
+            status_code=400,
+            detail="SEMSTASH_BUCKET not set. Initialize storage first.",
+        )
+
+    try:
+        # Initialize agent if needed
+        async with session._lock:
+            if session.agent is None:
+                session.agent = SemStashAgent(
+                    bucket=bucket,
+                    model_id=session.model_id,
+                    streaming=False,
+                )
+                session.agent.__enter__()
+
+        # Send message and get response
+        response = session.agent.chat(request.message)
+
+        return AgentChatResponse(
+            response=response,
+            tool_calls=[],  # Tool calls tracked internally by agent
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent error: {e}") from None
+
+
+@app.post("/agent/stream/{session_id}")
+async def agent_stream(
+    session_id: str,
+    request: AgentChatRequest,
+) -> StreamingResponse:
+    """Stream a response from the agent using Server-Sent Events (SSE).
+
+    Returns a stream of events:
+    - data: {"type": "text", "content": "..."} - Text chunks
+    - data: {"type": "tool", "name": "...", "status": "start|end"} - Tool calls
+    - data: {"type": "done"} - Stream complete
+    - data: {"type": "error", "message": "..."} - Error occurred
+    """
+    import json
+
+    from semstash.agent import SemStashAgent
+
+    session = _get_agent_session(session_id)
+
+    # Get bucket from environment
+    bucket = os.environ.get("SEMSTASH_BUCKET")
+    if not bucket:
+        raise HTTPException(
+            status_code=400,
+            detail="SEMSTASH_BUCKET not set. Initialize storage first.",
+        )
+
+    async def event_generator() -> Any:
+        """Generate SSE events from agent stream."""
+        try:
+            # Initialize agent if needed
+            async with session._lock:
+                if session.agent is None:
+                    session.agent = SemStashAgent(
+                        bucket=bucket,
+                        model_id=session.model_id,
+                        streaming=True,
+                    )
+                    session.agent.__enter__()
+
+            # Stream response
+            for event in session.agent.chat_stream(request.message):
+                # Handle different event types from Strands
+                if hasattr(event, "data"):
+                    chunk = event.data
+                    if isinstance(chunk, str) and chunk:
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                elif hasattr(event, "content"):
+                    # Handle content blocks
+                    for block in event.content:
+                        if isinstance(block, dict) and "text" in block:
+                            chunk = block["text"]
+                            if chunk:
+                                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/agent/reset/{session_id}", response_model=AgentResetResponse)
+async def reset_agent_session(session_id: str) -> AgentResetResponse:
+    """Reset the conversation history for an agent session."""
+    session = _get_agent_session(session_id)
+
+    if session.agent:
+        session.agent.reset_conversation()
+
+    return AgentResetResponse(message="Conversation reset successfully")
+
+
+@app.delete("/agent/session/{session_id}", response_model=SuccessResponse)
+async def delete_agent_session(session_id: str) -> SuccessResponse:
+    """Delete an agent session."""
+    session = _agent_sessions.pop(session_id, None)
+
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    # Clean up agent if initialized
+    if session.agent:
+        with contextlib.suppress(Exception):
+            session.agent.__exit__(None, None, None)
+
+    return SuccessResponse()
 
 
 # --- Web UI Helpers ---
@@ -930,6 +1205,22 @@ async def ui_search(
             "content_type": content_type,
             "path": path,
             "error": error,
+        },
+    )
+
+
+@app.get("/ui/chat", response_class=HTMLResponse)
+async def ui_chat(request: Request) -> HTMLResponse:
+    """AI agent chat interface."""
+    bucket = os.environ.get("SEMSTASH_BUCKET")
+
+    return templates.TemplateResponse(
+        request,
+        "chat.html",
+        {
+            "active_page": "chat",
+            "bucket": bucket,
+            "model_id": DEFAULT_AGENT_MODEL,
         },
     )
 

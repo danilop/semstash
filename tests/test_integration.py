@@ -1024,3 +1024,49 @@ class TestIntegrationLargeFiles:
         query_results = integration_stash.query("test presentation slide", top_k=10)
         keys = [r.key for r in query_results]
         assert any(k.startswith("presentations/multislide.pptx") for k in keys)
+
+
+@pytest.mark.integration
+class TestIntegrationStats:
+    """Tests for get_stats() with real AWS resources."""
+
+    def test_stats_returns_aws_resource_names(
+        self, integration_stash: SemStash, integration_bucket_name: str
+    ) -> None:
+        """Stats returns correct AWS resource names."""
+        stats = integration_stash.get_stats()
+
+        # Verify bucket name matches
+        assert stats.bucket == integration_bucket_name
+
+        # Verify vector bucket follows naming convention (bucket + "-vectors" suffix)
+        assert stats.vector_bucket == f"{integration_bucket_name}-vectors"
+
+        # Verify index name is set (uses default "default-index")
+        assert stats.index_name == "default-index"
+
+        # Verify region is set
+        assert stats.region is not None
+        assert stats.region == "us-east-1"  # Integration tests use us-east-1
+
+        # Verify dimension matches what we configured (256 for tests)
+        assert stats.dimension == 256
+
+    def test_stats_content_count_matches_uploaded(
+        self, integration_stash: SemStash, tmp_path: Path
+    ) -> None:
+        """Stats content count reflects uploaded files."""
+        # Initially should be empty (cleared before each test)
+        stats = integration_stash.get_stats()
+        assert stats.content_count == 0
+
+        # Upload a file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content for stats")
+        integration_stash.upload(test_file, target="/")
+
+        # Stats should reflect the upload
+        stats = integration_stash.get_stats()
+        assert stats.content_count == 1
+        assert stats.vector_count == 1
+        assert stats.storage_bytes > 0

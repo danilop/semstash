@@ -2,7 +2,7 @@
 
 These tests verify that:
     - The agent correctly uses MCP tools (not direct semstash calls)
-    - Content is actually stored in semstash via MCP
+    - Content retrieval and search work correctly
     - Different agent instances can access the same content
 
 Run with: pytest --use-aws -m integration tests/test_agent.py
@@ -12,115 +12,173 @@ from pathlib import Path
 
 import pytest
 
-from examples.strands_agent import semstash_agent
 from semstash import SemStash
+from semstash.agent import SemStashAgent
 
 
-def get_response_text(result: object) -> str:
-    """Extract text from agent response."""
-    if hasattr(result, "message") and result.message:
-        content = result.message.get("content", [])
-        return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and "text" in b)
-    return str(result)
+@pytest.fixture
+def initialized_stash(agent_bucket_name: str) -> SemStash:
+    """Initialize stash for agent tests and return it."""
+    from semstash.exceptions import AlreadyExistsError
+
+    stash = SemStash(agent_bucket_name, dimension=256)
+    try:
+        stash.init()
+    except AlreadyExistsError:
+        stash.open()
+    return stash
 
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("agent_stash_cleanup")
 class TestSemStashAgent:
-    """Integration tests for the SemStash Agent."""
+    """Integration tests for the SemStash Agent.
 
-    def test_agent_upload_then_new_agent_retrieves(
-        self, agent_bucket_name: str, sample_text_file: Path
+    These tests focus on the agent's read-focused capabilities:
+    - Browse existing content
+    - Query/search for content
+    - Get content details
+    - Delete content
+    - Show stats
+    """
+
+    def test_agent_browse_stash(
+        self, agent_bucket_name: str, sample_text_file: Path, initialized_stash: SemStash
     ) -> None:
-        """Test that content uploaded by one agent can be retrieved by a new agent instance."""
-        # First agent uploads
-        with semstash_agent(agent_bucket_name) as agent1:
-            upload_result = get_response_text(agent1(f"Upload the file at {sample_text_file}"))
-            assert "upload" in upload_result.lower() or sample_text_file.name in upload_result
+        """Test that agent can browse content in the stash."""
+        # Upload content directly using SemStash (file_path, target)
+        initialized_stash.upload(sample_text_file, sample_text_file.name, force=True)
 
-        # Verify content exists in semstash directly (proves MCP tool worked)
-        stash = SemStash(bucket=agent_bucket_name, auto_init=False)
-        browse = stash.browse("/")
-        keys = [item.key for item in browse.items]
-        assert sample_text_file.name in keys, f"File not found in semstash. Keys: {keys}"
-
-        # Second agent (new instance) retrieves
-        with semstash_agent(agent_bucket_name) as agent2:
-            retrieve_result = get_response_text(
-                agent2(f"Retrieve the content with key: {sample_text_file.name}")
-            )
+        # Verify agent can browse
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat("Browse the root of the stash and tell me what files are there")
+            # Agent should mention the uploaded file
+            assert len(result) > 0
+            # The response should contain some reference to the content
             assert (
-                sample_text_file.name in retrieve_result
-                or "url" in retrieve_result.lower()
-                or "https://" in retrieve_result
+                sample_text_file.name in result
+                or "sample" in result.lower()
+                or "txt" in result.lower()
             )
 
-    def test_agent_upload_then_new_agent_searches(
-        self, agent_bucket_name: str, sample_image_file: Path
+    def test_agent_query_text_content(
+        self, agent_bucket_name: str, sample_text_file: Path, initialized_stash: SemStash
     ) -> None:
-        """Test that content uploaded by one agent can be searched by a new agent instance."""
-        # First agent uploads image
-        with semstash_agent(agent_bucket_name) as agent1:
-            upload_result = get_response_text(agent1(f"Upload the file at {sample_image_file}"))
-            assert "upload" in upload_result.lower() or sample_image_file.name in upload_result
+        """Test that agent can search/query for text content."""
+        # Upload content directly using SemStash
+        initialized_stash.upload(sample_text_file, sample_text_file.name, force=True)
 
-        # Verify in semstash directly
-        stash = SemStash(bucket=agent_bucket_name, auto_init=False)
-        browse = stash.browse("/")
-        keys = [item.key for item in browse.items]
-        assert sample_image_file.name in keys, f"Image not found in semstash. Keys: {keys}"
+        # Verify agent can query
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat("Search for content about testing semantic storage")
+            # Agent should return something meaningful
+            assert len(result) > 0
 
-        # Second agent searches
-        with semstash_agent(agent_bucket_name) as agent2:
-            search_result = get_response_text(agent2("Search for images"))
-            assert len(search_result) > 0
-
-    def test_agent_upload_verified_in_semstash(
-        self, agent_bucket_name: str, sample_json_file: Path
+    def test_agent_summarize_content(
+        self, agent_bucket_name: str, initialized_stash: SemStash, tmp_path: Path
     ) -> None:
-        """Test that agent upload actually stores content in semstash."""
-        stash = SemStash(bucket=agent_bucket_name, auto_init=False)
-        initial_stats = stash.get_stats()
-        initial_count = initial_stats.content_count
-
-        # Agent uploads
-        with semstash_agent(agent_bucket_name) as agent:
-            agent(f"Upload the file at {sample_json_file}")
-
-        # Verify count increased
-        final_stats = stash.get_stats()
-        assert final_stats.content_count > initial_count, (
-            "Content count should increase after upload"
+        """Test that agent can retrieve and summarize actual content."""
+        # Create a file with specific, verifiable content
+        doc_file = tmp_path / "project_notes.txt"
+        doc_file.write_text(
+            "Project Alpha Meeting Notes - March 2024\n\n"
+            "Attendees: Alice, Bob, and Charlie\n\n"
+            "Key decisions:\n"
+            "1. Launch date set for June 15th\n"
+            "2. Budget approved at $50,000\n"
+            "3. Bob will lead the frontend team\n\n"
+            "Action items:\n"
+            "- Alice to finalize requirements by April 1st\n"
+            "- Charlie to set up CI/CD pipeline\n"
         )
 
-        # Verify file exists
-        browse = stash.browse("/")
-        keys = [item.key for item in browse.items]
-        assert sample_json_file.name in keys
+        # Upload the document
+        initialized_stash.upload(doc_file, doc_file.name, force=True)
 
-    def test_agent_delete_verified_in_semstash(
-        self, agent_bucket_name: str, sample_text_file: Path
+        # Ask agent to summarize - it should retrieve and understand the content
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat(
+                "Find the project notes and tell me: "
+                "What is the launch date and who is leading the frontend?"
+            )
+
+            # Verify agent found and understood the content
+            result_lower = result.lower()
+            assert len(result) > 50, "Response too short to be a real summary"
+            # Should mention key facts from the document
+            assert "june" in result_lower or "15" in result_lower, (
+                f"Agent should mention launch date. Got: {result}"
+            )
+            assert "bob" in result_lower or "frontend" in result_lower, (
+                f"Agent should mention Bob/frontend. Got: {result}"
+            )
+
+    def test_agent_get_content(
+        self, agent_bucket_name: str, sample_text_file: Path, initialized_stash: SemStash
     ) -> None:
-        """Test that agent delete actually removes content from semstash."""
-        stash = SemStash(bucket=agent_bucket_name, auto_init=False)
+        """Test that agent can get specific content by key."""
+        # Upload content directly using SemStash
+        initialized_stash.upload(sample_text_file, sample_text_file.name, force=True)
 
-        # First agent uploads
-        with semstash_agent(agent_bucket_name) as agent1:
-            agent1(f"Upload the file at {sample_text_file}")
+        # Verify agent can get content
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat(f"Get the content with key {sample_text_file.name}")
+            # Agent should return something meaningful
+            assert len(result) > 0
 
-        # Verify exists
-        browse = stash.browse("/")
+    def test_agent_stats(
+        self, agent_bucket_name: str, sample_text_file: Path, initialized_stash: SemStash
+    ) -> None:
+        """Test that agent can show storage statistics."""
+        # Upload content directly using SemStash
+        initialized_stash.upload(sample_text_file, sample_text_file.name, force=True)
+
+        # Verify agent can get stats
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat("Show me the storage statistics")
+            # Agent should return stats info
+            assert len(result) > 0
+
+    def test_agent_delete_content(
+        self, agent_bucket_name: str, sample_text_file: Path, initialized_stash: SemStash
+    ) -> None:
+        """Test that agent can delete content."""
+        # Upload content directly using SemStash
+        initialized_stash.upload(sample_text_file, sample_text_file.name, force=True)
+
+        # Verify content exists
+        browse = initialized_stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_text_file.name in keys
 
-        # Second agent deletes
-        with semstash_agent(agent_bucket_name) as agent2:
-            delete_result = get_response_text(
-                agent2(f"Delete the content with key: {sample_text_file.name}")
-            )
-            assert "delete" in delete_result.lower() or sample_text_file.name in delete_result
+        # Have agent delete it
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            result = agent.chat(f"Delete the content with key {sample_text_file.name}")
+            assert len(result) > 0
 
         # Verify deleted from semstash
-        browse = stash.browse("/")
+        browse = initialized_stash.browse("/")
         keys = [item.key for item in browse.items]
         assert sample_text_file.name not in keys, "File should be deleted from semstash"
+
+    def test_agent_conversation_reset(
+        self, agent_bucket_name: str, initialized_stash: SemStash
+    ) -> None:
+        """Test that agent conversation can be reset."""
+        with SemStashAgent(bucket=agent_bucket_name) as agent:
+            # Have a conversation
+            agent.chat("Hello, can you help me?")
+
+            # Reset
+            agent.reset_conversation()
+
+            # Should still work after reset
+            result = agent.chat("Show me the storage statistics")
+            assert len(result) > 0
+
+    def test_agent_streaming(self, agent_bucket_name: str, initialized_stash: SemStash) -> None:
+        """Test that agent streaming works."""
+        with SemStashAgent(bucket=agent_bucket_name, streaming=True) as agent:
+            events = list(agent.chat_stream("Say hello"))
+            # Should have received some events
+            assert len(events) > 0

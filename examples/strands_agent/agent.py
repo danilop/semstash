@@ -1,31 +1,59 @@
-"""SemStash Agent - AI agent for semantic storage using Strands SDK."""
+"""Example of using SemStash Agent for semantic storage.
 
-import sys
-from collections.abc import Generator
-from contextlib import contextmanager
+This example demonstrates how to use the SemStash Agent API to interact
+with content stored in a SemStash bucket via conversational AI.
 
-from mcp import StdioServerParameters, stdio_client
-from strands import Agent
-from strands.tools.mcp import MCPClient
+The SemStashAgent class is now part of the main semstash package.
+"""
+
+# Re-export from the main package for backwards compatibility
+from semstash.agent import SemStashAgent, semstash_agent
+
+__all__ = ["SemStashAgent", "semstash_agent"]
 
 
-@contextmanager
-def semstash_agent(bucket: str, use_local: bool = True) -> Generator[Agent]:
-    """Create an AI agent for semantic storage via semstash MCP server.
+def main() -> None:
+    """Demonstrate SemStash Agent usage."""
+    import sys
 
-    Args:
-        bucket: The stash/bucket name to use.
-        use_local: If True, use local Python module. If False, use uvx.
-    """
-    if use_local:
-        params = StdioServerParameters(
-            command=sys.executable, args=["-m", "semstash.mcp_server", bucket]
-        )
-    else:
-        params = StdioServerParameters(command="uvx", args=["semstash", "mcp", bucket])
+    if len(sys.argv) < 2:
+        print("Usage: python agent.py <bucket-name>")
+        print("\nExample:")
+        print("  python agent.py my-stash")
+        sys.exit(1)
 
-    mcp_client = MCPClient(lambda: stdio_client(params))
+    bucket_name = sys.argv[1]
 
-    with mcp_client:
-        tools = mcp_client.list_tools_sync()
-        yield Agent(tools=tools, system_prompt="You help users store and retrieve information.")
+    print(f"Connecting to SemStash bucket: {bucket_name}")
+    print("=" * 50)
+
+    with semstash_agent(bucket_name) as agent:
+        print("\nAgent ready! Try these commands:")
+        print("  - 'browse /'")
+        print("  - 'search for documents about...'")
+        print("  - 'get stats'")
+        print("  - 'quit' to exit")
+        print()
+
+        while True:
+            try:
+                user_input = input("You: ").strip()
+                if not user_input:
+                    continue
+                if user_input.lower() in ("quit", "exit", "/quit"):
+                    print("Goodbye!")
+                    break
+
+                # Use non-streaming for simplicity in this example
+                response = agent.chat(user_input)
+                print(f"\nAgent: {response}\n")
+
+            except KeyboardInterrupt:
+                print("\nGoodbye!")
+                break
+            except Exception as e:
+                print(f"\nError: {e}\n")
+
+
+if __name__ == "__main__":
+    main()

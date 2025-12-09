@@ -206,13 +206,18 @@ def browse(path: str, limit: int = DEFAULT_BROWSE_LIMIT) -> str:
 
 @mcp.tool()
 def stats() -> str:
-    """Get storage statistics."""
+    """Get storage statistics and AWS resource information."""
     s = get_cached_stash().get_stats()
     return to_json(
         {
             "content_count": s.content_count,
             "vector_count": s.vector_count,
             "storage_bytes": s.storage_bytes,
+            "dimension": s.dimension,
+            "bucket": s.bucket,
+            "vector_bucket": s.vector_bucket,
+            "index_name": s.index_name,
+            "region": s.region,
         }
     )
 

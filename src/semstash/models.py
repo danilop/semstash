@@ -265,12 +265,19 @@ class InitResult(BaseModel):
 
 
 class UsageStats(BaseModel):
-    """Current usage statistics for the stash."""
+    """Current usage statistics and AWS resources for the stash."""
 
+    # Content statistics
     content_count: int = Field(description="Number of content items stored")
     vector_count: int = Field(description="Number of vectors stored")
     storage_bytes: int = Field(description="Total bytes stored in S3")
     dimension: int = Field(description="Embedding dimension")
+
+    # AWS resource information
+    bucket: str = Field(description="S3 bucket name for content storage")
+    vector_bucket: str = Field(description="S3 Vectors bucket name")
+    index_name: str = Field(description="S3 Vectors index name")
+    region: str = Field(description="AWS region")
 
     @property
     def storage_gb(self) -> float:

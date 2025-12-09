@@ -527,6 +527,10 @@ class TestWebStats:
             vector_count=10,
             storage_bytes=1024 * 1024,
             dimension=3072,
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            index_name="default-index",
+            region="us-east-1",
         )
         mock_get_stash.return_value = mock_stash
 
@@ -694,6 +698,10 @@ class TestWebUI:
             vector_count=10,
             storage_bytes=1024 * 1024,
             dimension=3072,
+            bucket="test-bucket",
+            vector_bucket="test-bucket-vectors",
+            index_name="default-index",
+            region="us-east-1",
         )
         mock_get_stash.return_value = mock_stash
 

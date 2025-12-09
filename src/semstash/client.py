@@ -205,8 +205,50 @@ class SemStash:
                 dimension=self.config.dimension,
             )
 
+    def _sync_dimension_from_storage(self) -> int:
+        """Load actual dimension from storage and sync components if needed.
+
+        Reads the stash config from S3 to determine the actual embedding dimension.
+        If it differs from the current config, recreates VectorStorage and
+        EmbeddingGenerator with the correct dimension.
+
+        Returns:
+            The actual dimension from storage (may differ from initial config).
+        """
+        assert self._content_storage is not None
+        assert self._vector_storage is not None
+        assert self.config.vector_bucket is not None
+
+        # Try loading dimension from stash config, then fallback to index stats
+        stash_config = self._content_storage.load_config()
+        if stash_config:
+            actual_dimension = stash_config.dimension
+        elif self._vector_storage.index_exists():
+            actual_dimension = self._vector_storage.get_stats()["dimension"]
+        else:
+            return self.config.dimension
+
+        # Recreate components if dimension differs
+        if actual_dimension != self.config.dimension:
+            self.config.dimension = actual_dimension
+            self._vector_storage = VectorStorage(
+                bucket=self.config.vector_bucket,
+                region=self.config.region,
+                dimension=actual_dimension,
+            )
+            self._embedding_generator = EmbeddingGenerator(
+                region=self.config.region,
+                dimension=actual_dimension,
+            )
+
+        return actual_dimension
+
     def _ensure_initialized(self) -> None:
-        """Ensure storage is initialized."""
+        """Ensure storage is initialized (lazy initialization).
+
+        For existing stashes, loads config and updates dimension to match
+        what's stored, ensuring query embeddings have correct dimensions.
+        """
         if self._initialized:
             return
 
@@ -217,6 +259,9 @@ class SemStash:
 
         if self.auto_init:
             self._content_storage.ensure_bucket_exists()
+            self._vector_storage.ensure_index_exists()
+            self._sync_dimension_from_storage()
+            # Re-ensure index exists with correct dimension
             self._vector_storage.ensure_index_exists()
 
         self._initialized = True
@@ -312,31 +357,12 @@ class SemStash:
                 "Use init() to create a new stash."
             )
 
-        # Load stash config from S3 to get dimension and other settings
+        # Load stash config for prefix_depth (dimension handled by sync helper)
         stash_config = self._content_storage.load_config()
-        if stash_config:
-            actual_dimension = stash_config.dimension
-            prefix_depth = stash_config.prefix_depth
-        else:
-            # Fall back to getting dimension from vector index stats (legacy stashes)
-            index_stats = self._vector_storage.get_stats()
-            actual_dimension = index_stats["dimension"]
-            prefix_depth = 0
+        prefix_depth = stash_config.prefix_depth if stash_config else 0
 
-        # Update config and recreate components if dimension differs
-        if actual_dimension != self.config.dimension:
-            self.config.dimension = actual_dimension
-            self._vector_storage = VectorStorage(
-                bucket=self.config.vector_bucket,
-                region=self.config.region,
-                dimension=actual_dimension,
-            )
-            self._embedding_generator = EmbeddingGenerator(
-                region=self.config.region,
-                dimension=actual_dimension,
-            )
-
-        # Initialize storage components (sets internal flags for query access)
+        # Sync dimension from storage and recreate components if needed
+        self._sync_dimension_from_storage()
         self._vector_storage.ensure_index_exists()
         self._initialized = True
 
@@ -885,10 +911,10 @@ class SemStash:
         )
 
     def get_stats(self) -> UsageStats:
-        """Get storage statistics.
+        """Get storage statistics and AWS resource information.
 
         Returns:
-            UsageStats with storage and vector counts.
+            UsageStats with storage counts and AWS resource names.
         """
         self._ensure_initialized()
 
@@ -896,11 +922,21 @@ class SemStash:
         total_size = sum(i.file_size for i in items)
         content_count = len(items)
 
+        # These are guaranteed to be set after _ensure_initialized()
+        assert self.config.bucket is not None
+        assert self.config.vector_bucket is not None
+        assert self.config.index_name is not None
+        assert self.config.region is not None
+
         return UsageStats(
             content_count=content_count,
             vector_count=content_count,
             storage_bytes=total_size,
             dimension=self.config.dimension,
+            bucket=self.config.bucket,
+            vector_bucket=self.config.vector_bucket,
+            index_name=self.config.index_name,
+            region=self.config.region,
         )
 
     def check(self) -> CheckResult:

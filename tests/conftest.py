@@ -11,9 +11,11 @@ Integration tests require:
     - Access to Bedrock Nova embeddings model
 """
 
+import atexit
 import io
 import json
 import os
+import signal
 import uuid
 from collections.abc import Generator
 from pathlib import Path
@@ -30,6 +32,68 @@ from moto import mock_aws
 from semstash.config import Config
 
 __all__ = ["assert_valid_query_results", "assert_valid_search_result"]
+
+# --- Robust Cleanup Registry ---
+# Track resources to clean up even on interrupt/crash
+
+_cleanup_registry: dict[str, bool] = {}  # bucket_name -> preserve flag
+_original_sigint_handler: signal.Handlers | None = None
+
+
+def _register_for_cleanup(bucket_name: str, preserve: bool = False) -> None:
+    """Register a bucket for cleanup on exit."""
+    _cleanup_registry[bucket_name] = preserve
+
+
+def _unregister_cleanup(bucket_name: str) -> None:
+    """Remove a bucket from cleanup registry (already cleaned)."""
+    _cleanup_registry.pop(bucket_name, None)
+
+
+def _cleanup_all_resources() -> None:
+    """Clean up all registered resources. Called on exit or interrupt."""
+    if not _cleanup_registry:
+        return
+
+    # Import here to avoid circular imports
+    from semstash import SemStash
+
+    for bucket_name, preserve in list(_cleanup_registry.items()):
+        if preserve:
+            print(f"\n[atexit] Preserving: {bucket_name}")
+            continue
+        try:
+            stash = SemStash(bucket_name, auto_init=False)
+            stash.open()
+            stash.destroy(force=True)
+            print(f"\n[atexit] Cleaned up: {bucket_name}")
+        except Exception as e:
+            print(f"\n[atexit] Failed to cleanup {bucket_name}: {e}")
+        finally:
+            _cleanup_registry.pop(bucket_name, None)
+
+
+def _sigint_handler(signum: int, frame: Any) -> None:
+    """Handle Ctrl+C by cleaning up before exit."""
+    print("\n\nInterrupted! Cleaning up test resources...")
+    _cleanup_all_resources()
+    # Call original handler or exit
+    if _original_sigint_handler and callable(_original_sigint_handler):
+        _original_sigint_handler(signum, frame)
+    else:
+        raise KeyboardInterrupt
+
+
+# Register atexit handler for normal exits
+atexit.register(_cleanup_all_resources)
+
+
+def _install_signal_handlers() -> None:
+    """Install signal handlers for interrupt cleanup."""
+    global _original_sigint_handler
+    if _original_sigint_handler is None:
+        _original_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)
+
 
 # --- Pytest Configuration ---
 
@@ -161,9 +225,16 @@ def _session_stash(
     - Creating S3 bucket and vector index ONCE for all tests
     - Automatic cleanup after ALL tests complete (success or failure)
     - Option to preserve resources with --preserve-aws flag
+    - Robust cleanup on interrupt via atexit/signal handlers
     """
     from semstash import SemStash
     from semstash.exceptions import AlreadyExistsError
+
+    # Install signal handlers for interrupt cleanup
+    _install_signal_handlers()
+
+    # Register for cleanup BEFORE creating resources
+    _register_for_cleanup(integration_bucket_name, preserve_aws)
 
     stash = SemStash(integration_bucket_name, dimension=256)
     try:
@@ -183,8 +254,10 @@ def _session_stash(
         try:
             stash.destroy(force=True)
             print(f"\n>>> Cleaned up integration test resources: {integration_bucket_name}")
+            # Unregister since we cleaned up successfully
+            _unregister_cleanup(integration_bucket_name)
         except Exception as e:
-            # Log but don't fail - best effort cleanup
+            # Log but don't fail - atexit handler will retry
             print(f"\nWarning: Failed to cleanup {integration_bucket_name}: {e}")
 
 
@@ -233,8 +306,15 @@ def real_bedrock_client() -> Any:
 
 @pytest.fixture(scope="class", autouse=False)
 def agent_stash_cleanup(agent_bucket_name: str, preserve_aws: bool) -> Generator[None]:
-    """Cleanup agent test bucket after agent test class completes."""
+    """Cleanup agent test bucket after agent test class completes.
+
+    Uses robust cleanup registry for interrupt handling.
+    """
     from semstash import SemStash
+
+    # Install signal handlers and register for cleanup
+    _install_signal_handlers()
+    _register_for_cleanup(agent_bucket_name, preserve_aws)
 
     yield  # Run tests first
 
@@ -247,7 +327,10 @@ def agent_stash_cleanup(agent_bucket_name: str, preserve_aws: bool) -> Generator
             stash.open()
             stash.destroy(force=True)
             print(f"\n>>> Cleaned up agent test resources: {agent_bucket_name}")
+            # Unregister since we cleaned up successfully
+            _unregister_cleanup(agent_bucket_name)
         except Exception as e:
+            # Log but don't fail - atexit handler will retry
             print(f"\nWarning: Failed to cleanup agent bucket {agent_bucket_name}: {e}")
 
 

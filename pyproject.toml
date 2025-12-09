@@ -38,6 +38,9 @@ dependencies = [
     # Document to Markdown conversion
     "markitdown[pdf,docx,pptx,xlsx]>=0.1.0",
     "urllib3>=2.6.0",
+    # AI Agent support
+    "strands-agents>=0.1.0",
+    "strands-agents-tools>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -54,8 +57,6 @@ dev = [
     "pdoc>=15.0.0",
     "vulture>=2.14",
     "pre-commit>=4.0.0",
-    # Strands Agent SDK for MCP server testing
-    "strands-agents>=0.1.0",
     # Security scanning
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",

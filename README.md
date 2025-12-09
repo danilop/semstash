@@ -348,6 +348,68 @@ semstash mcp my-stash  # Start MCP server
 
 Agents can upload information they learn and query it later, building knowledge over time.
 
+### AI Assistant
+
+Use the built-in conversational AI agent to interact with your stash naturally:
+
+```bash
+semstash my-stash agent
+# You: What documents do I have about machine learning?
+# Agent: I found 3 documents related to machine learning...
+```
+
+The agent can search, summarize, browse, and manage content through conversation.
+
+## AI Agent
+
+SemStash includes a conversational AI agent powered by Amazon Bedrock that lets you interact with your stash through natural language. The agent can search, browse, summarize, and manage content.
+
+### CLI
+
+Start an interactive session:
+
+```bash
+semstash my-stash agent
+semstash my-stash agent --model us.amazon.nova-pro-v1:0  # Use a different model
+```
+
+Commands within the session:
+- `/quit` or `/exit` - Exit the agent
+- `/reset` or `/clear` - Clear conversation history
+- `/help` - Show available commands
+
+### Python API
+
+```python
+from semstash.agent import SemStashAgent
+
+with SemStashAgent(bucket="my-stash") as agent:
+    # Non-streaming chat
+    response = agent.chat("What files do I have about Python?")
+    print(response)
+
+    # Streaming chat
+    for event in agent.chat_stream("Summarize my latest documents"):
+        if event.get("type") == "data":
+            print(event["data"], end="", flush=True)
+
+    # Reset conversation
+    agent.reset_conversation()
+```
+
+### Web Interface
+
+Access the chat UI at `http://localhost:8000/ui/chat` when running the web server.
+
+### REST API
+
+Agent endpoints (see REST API section for full details):
+- `POST /agent/session` - Create a new agent session
+- `POST /agent/chat/{session_id}` - Send a message (non-streaming)
+- `POST /agent/stream/{session_id}` - Send a message (streaming SSE)
+- `POST /agent/reset/{session_id}` - Reset conversation history
+- `DELETE /agent/session/{session_id}` - Delete a session
+
 ## MCP Server
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) server lets AI assistants use SemStash as persistent memory. Start it with:
@@ -389,6 +451,7 @@ The web interface provides:
 | Browse | `/ui/browse/{path}` | Paginated content list with filtering |
 | Search | `/ui/search` | Semantic search with visual results |
 | Content | `/ui/content/{path}` | Preview, metadata, download, delete |
+| Chat | `/ui/chat` | AI agent for conversational access |
 
 <p align="center">
   <img src="screenshots/web-browse.png" alt="Browse content with folder navigation" width="800">

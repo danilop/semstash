@@ -21,6 +21,7 @@ Usage:
     semstash my-stash check
     semstash my-stash sync
     semstash my-stash destroy --force
+    semstash my-stash agent                                 # AI agent session
 """
 
 import json
@@ -804,7 +805,7 @@ def stats(
     region: RegionOption = DEFAULT_REGION,
     output: OutputOption = "text",
 ) -> None:
-    """Show storage statistics."""
+    """Show storage statistics and AWS resources."""
     try:
         client = SemStash(bucket=stash, region=region)
         result = client.get_stats()
@@ -817,6 +818,10 @@ def stats(
                     "storage_bytes": result.storage_bytes,
                     "storage_gb": result.storage_gb,
                     "dimension": result.dimension,
+                    "bucket": result.bucket,
+                    "vector_bucket": result.vector_bucket,
+                    "index_name": result.index_name,
+                    "region": result.region,
                 }
             )
         else:
@@ -825,6 +830,11 @@ def stats(
             console.print(f"  Vectors: {result.vector_count:,}")
             console.print(f"  Storage: {format_size(result.storage_bytes)}")
             console.print(f"  Dimension: {result.dimension}")
+            console.print("\n[bold]AWS Resources[/bold]\n")
+            console.print(f"  Region: {result.region}")
+            console.print(f"  S3 Bucket: {result.bucket}")
+            console.print(f"  S3 Vectors Bucket: {result.vector_bucket}")
+            console.print(f"  Vector Index: {result.index_name}")
 
     except NotInitializedError:
         error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")
@@ -1100,6 +1110,127 @@ def mcp(
     from semstash.mcp_server import main as mcp_main
 
     mcp_main()
+
+
+@app.command()
+def agent(
+    stash: StashArgument,
+    model: Annotated[
+        str,
+        typer.Option("--model", "-m", help="Bedrock model ID"),
+    ] = "us.amazon.nova-lite-v1:0",
+    region: RegionOption = DEFAULT_REGION,
+) -> None:
+    """Start an interactive AI agent session.
+
+    The agent helps you interact with content in the stash:
+    - Search and query for content
+    - Get summaries of documents
+    - Browse stored content
+    - Delete content when requested
+
+    Commands:
+        /quit or /exit - Exit the agent
+        /reset or /clear - Clear conversation history
+        /help - Show available commands
+
+    Examples:
+        semstash my-stash agent
+        semstash my-stash agent --model us.amazon.nova-pro-v1:0
+    """
+    import os
+    import readline  # noqa: F401 - enables input history
+
+    from semstash.agent import SemStashAgent
+
+    # Set region if provided
+    if region:
+        os.environ["AWS_DEFAULT_REGION"] = region
+
+    console.print("\n[bold cyan]SemStash Agent[/bold cyan]")
+    console.print(f"Connected to stash: [bold]{stash}[/bold]")
+    console.print(f"Model: {model}")
+    console.print("\nType your message or /help for commands. Use /quit to exit.\n")
+
+    try:
+        with SemStashAgent(
+            bucket=stash,
+            model_id=model,
+            streaming=True,
+            region=region,
+        ) as agent_instance:
+            while True:
+                try:
+                    # Get user input (supports multi-line with continuation)
+                    user_input = console.input("[bold green]You:[/bold green] ").strip()
+
+                    if not user_input:
+                        continue
+
+                    # Handle commands
+                    if user_input.startswith("/"):
+                        cmd = user_input.lower()
+                        if cmd in ("/quit", "/exit", "/q"):
+                            console.print("\n[dim]Goodbye![/dim]")
+                            break
+                        elif cmd in ("/reset", "/clear"):
+                            agent_instance.reset_conversation()
+                            console.print("[dim]Conversation cleared.[/dim]\n")
+                            continue
+                        elif cmd == "/help":
+                            console.print("\n[bold]Available Commands:[/bold]")
+                            console.print("  /quit, /exit, /q  - Exit the agent")
+                            console.print("  /reset, /clear    - Clear conversation history")
+                            console.print("  /help             - Show this help message")
+                            console.print()
+                            continue
+                        else:
+                            console.print(f"[yellow]Unknown command: {user_input}[/yellow]")
+                            console.print("Type /help for available commands.\n")
+                            continue
+
+                    # Stream agent response
+                    console.print("[bold blue]Agent:[/bold blue] ", end="")
+
+                    response_text = ""
+                    try:
+                        for event in agent_instance.chat_stream(user_input):
+                            # Handle different event types from Strands
+                            if hasattr(event, "data"):
+                                chunk = event.data
+                                if isinstance(chunk, str):
+                                    response_text += chunk
+                                    console.print(chunk, end="")
+                            elif hasattr(event, "content"):
+                                # Handle content blocks
+                                for block in event.content:
+                                    if isinstance(block, dict) and "text" in block:
+                                        chunk = block["text"]
+                                        response_text += chunk
+                                        console.print(chunk, end="")
+                    except Exception as stream_err:
+                        # Fallback to non-streaming if streaming fails
+                        if not response_text:
+                            response_text = agent_instance.chat(user_input)
+                            console.print(response_text, end="")
+                        else:
+                            console.print(f"\n[yellow]Stream interrupted: {stream_err}[/yellow]")
+
+                    console.print("\n")
+
+                except KeyboardInterrupt:
+                    console.print("\n[dim]Use /quit to exit.[/dim]\n")
+                    continue
+                except EOFError:
+                    console.print("\n[dim]Goodbye![/dim]")
+                    break
+
+    except NotInitializedError:
+        error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")
+    except SemStashError as e:
+        error_exit(str(e))
+    except Exception as e:
+        error_exit(f"Agent error: {e}")
 
 
 def main() -> None:

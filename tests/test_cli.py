@@ -43,6 +43,8 @@ class TestCliHelp:
         assert "check" in result.output
         assert "sync" in result.output
         assert "destroy" in result.output
+        # upload-dir was merged into upload
+        assert "upload-dir" not in result.output
 
 
 class TestCliInit:
@@ -213,6 +215,127 @@ class TestCliUpload:
         assert result.exit_code == 0
         assert mock_stash.upload.call_count == 2
         assert "Uploaded 2 files" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_directory(self, mock_stash_class: MagicMock, tmp_path: Path) -> None:
+        """Upload command handles directory transparently."""
+        # Create a directory with files
+        source_dir = tmp_path / "docs"
+        source_dir.mkdir()
+        (source_dir / "file1.txt").write_text("content 1")
+        (source_dir / "file2.txt").write_text("content 2")
+
+        mock_stash = MagicMock()
+        mock_stash.upload_directory.return_value = [
+            UploadResult(
+                key="docs/file1.txt",
+                path="/docs/file1.txt",
+                content_type="text/plain",
+                file_size=9,
+                dimension=3072,
+            ),
+            UploadResult(
+                key="docs/file2.txt",
+                path="/docs/file2.txt",
+                content_type="text/plain",
+                file_size=9,
+                dimension=3072,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(app, ["upload", "test-bucket", str(source_dir), "/docs/"])
+
+        assert result.exit_code == 0
+        mock_stash.upload_directory.assert_called_once()
+        call_kwargs = mock_stash.upload_directory.call_args[1]
+        assert call_kwargs.get("target_path") == "/docs/"
+        assert call_kwargs.get("pattern") == "**/*"  # Default pattern
+        assert "Uploaded 2 files" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_directory_with_pattern(
+        self, mock_stash_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Upload command handles directory with pattern filter."""
+        # Create a directory with files
+        source_dir = tmp_path / "images"
+        source_dir.mkdir()
+        (source_dir / "photo1.jpg").write_bytes(b"jpg data")
+        (source_dir / "photo2.jpg").write_bytes(b"jpg data")
+        (source_dir / "readme.txt").write_text("text")
+
+        mock_stash = MagicMock()
+        mock_stash.upload_directory.return_value = [
+            UploadResult(
+                key="photos/photo1.jpg",
+                path="/photos/photo1.jpg",
+                content_type="image/jpeg",
+                file_size=8,
+                dimension=3072,
+            ),
+            UploadResult(
+                key="photos/photo2.jpg",
+                path="/photos/photo2.jpg",
+                content_type="image/jpeg",
+                file_size=8,
+                dimension=3072,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app,
+            ["upload", "test-bucket", str(source_dir), "/photos/", "--pattern", "*.jpg"],
+        )
+
+        assert result.exit_code == 0
+        mock_stash.upload_directory.assert_called_once()
+        call_kwargs = mock_stash.upload_directory.call_args[1]
+        assert call_kwargs.get("pattern") == "*.jpg"
+        assert "Uploaded 2 files" in result.output
+
+    def test_upload_directory_without_trailing_slash(self, tmp_path: Path) -> None:
+        """Upload directory without trailing slash shows error."""
+        source_dir = tmp_path / "docs"
+        source_dir.mkdir()
+        (source_dir / "file.txt").write_text("content")
+
+        result = runner.invoke(app, ["upload", "test-bucket", str(source_dir), "/docs"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+        assert "must end with '/'" in result.output
+
+    @patch("semstash.cli.SemStash")
+    def test_upload_directory_json_output(
+        self, mock_stash_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Upload directory with JSON output."""
+        source_dir = tmp_path / "data"
+        source_dir.mkdir()
+        (source_dir / "file.txt").write_text("content")
+
+        mock_stash = MagicMock()
+        mock_stash.upload_directory.return_value = [
+            UploadResult(
+                key="data/file.txt",
+                path="/data/file.txt",
+                content_type="text/plain",
+                file_size=7,
+                dimension=3072,
+            ),
+        ]
+        mock_stash_class.return_value = mock_stash
+
+        result = runner.invoke(
+            app, ["upload", "test-bucket", str(source_dir), "/data/", "-o", "json"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["uploaded"][0]["path"] == "/data/file.txt"
 
 
 class TestCliQuery:

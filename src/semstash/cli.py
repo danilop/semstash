@@ -8,7 +8,8 @@ Usage:
     semstash my-stash upload photo.jpg /                    # Upload to root
     semstash my-stash upload photo.jpg /images/             # Upload to /images/ folder
     semstash my-stash upload photo.jpg /images/sunset.jpg   # Upload with rename
-    semstash my-stash upload-dir ./docs/ /docs/             # Upload directory
+    semstash my-stash upload ./docs/ /docs/                 # Upload directory
+    semstash my-stash upload ./docs/ /docs/ -p "*.txt"      # Upload with pattern
     semstash my-stash query "sunset on beach"
     semstash my-stash query "sunset" --path /images/        # Filter by path
     semstash my-stash query "sunset" -d ./downloads/
@@ -199,26 +200,34 @@ def init(
 @app.command()
 def upload(
     stash: StashArgument,
-    files: Annotated[list[Path], typer.Argument(help="Files to upload (supports glob: *.jpg)")],
+    files: Annotated[
+        list[Path], typer.Argument(help="Files or directories to upload (supports glob: *.jpg)")
+    ],
     target: Annotated[
         str,
         typer.Argument(
             help="Target path: '/' root, '/folder/' keeps name, '/path/name.ext' renames"
         ),
     ],
+    pattern: Annotated[
+        str, typer.Option("--pattern", "-p", help="Glob pattern for directory uploads")
+    ] = "**/*",
     tags: Annotated[list[str] | None, typer.Option("--tag", "-t", help="Tags")] = None,
     region: RegionOption = DEFAULT_REGION,
     force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite if exists")] = False,
     output: OutputOption = "text",
     quiet: QuietOption = False,
 ) -> None:
-    """Upload files to semantic storage.
+    """Upload files or directories to semantic storage.
 
     Stores files and generates embeddings for semantic search.
     Target path determines where files are stored:
     - '/' uploads to root (preserves filename)
     - '/folder/' uploads to folder (preserves filename)
     - '/path/name.ext' uploads with exact path (renames file)
+
+    When uploading a directory, the directory structure is preserved.
+    Use --pattern to filter which files are uploaded from directories.
 
     Use --force to overwrite existing content.
 
@@ -228,44 +237,99 @@ def upload(
         semstash mystash upload photo.jpg /images/sunset.jpg
         semstash mystash upload *.jpg /photos/
         semstash mystash upload documents/*.pdf /docs/ --tag work
+        semstash mystash upload ./docs/ /docs/
+        semstash mystash upload ./images/ /photos/ --pattern "*.jpg"
     """
-    # Validate: multiple files require target ending with /
+    # Check if any input is a directory
+    has_directory = any(f.is_dir() for f in files if f.exists())
+
+    # Validate: directories require target ending with /
+    if has_directory and not target.endswith("/"):
+        error_exit("Target must end with '/' when uploading directories.")
+
+    # Validate: multiple inputs require target ending with /
     if len(files) > 1 and not target.endswith("/"):
         error_exit("Target must end with '/' when uploading multiple files.")
 
-    # Validate all files exist first
+    # Validate all files/directories exist first
     for file_path in files:
         if not file_path.exists():
-            error_exit(f"File not found: {file_path}")
+            error_exit(f"File or directory not found: {file_path}")
 
     try:
         client = SemStash(bucket=stash, region=region)
         results = []
         show_progress = output == "text" and not quiet
 
-        if show_progress and len(files) == 1:
-            # Single file: use spinner
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                progress.add_task(f"Uploading {files[0].name}...", total=None)
-                result = client.upload(
-                    file_path=files[0],
-                    target=target,
-                    tags=tags if tags else None,
-                    force=force,
-                )
-                results.append(result)
-            console.print(f"[green]✓[/green] Uploaded [bold]{result.path}[/bold]")
-        elif show_progress and len(files) > 1:
-            # Multiple files: use progress bar
-            with Progress(console=console) as progress:
-                task = progress.add_task("Uploading files...", total=len(files))
-                for file_path in files:
-                    progress.update(task, description=f"Uploading {file_path.name}...")
+        # Separate directories and files
+        directories = [f for f in files if f.is_dir()]
+        regular_files = [f for f in files if f.is_file()]
+
+        # Handle directory uploads
+        if directories:
+            for source_dir in directories:
+                if show_progress:
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        progress.add_task(f"Uploading {source_dir}...", total=None)
+                        dir_results = client.upload_directory(
+                            source_dir=source_dir,
+                            target_path=target,
+                            pattern=pattern,
+                            tags=tags,
+                            force=force,
+                        )
+                        results.extend(dir_results)
+                else:
+                    dir_results = client.upload_directory(
+                        source_dir=source_dir,
+                        target_path=target,
+                        pattern=pattern,
+                        tags=tags,
+                        force=force,
+                    )
+                    results.extend(dir_results)
+
+        # Handle file uploads
+        if regular_files:
+            if show_progress and len(regular_files) == 1 and not directories:
+                # Single file: use spinner
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    progress.add_task(f"Uploading {regular_files[0].name}...", total=None)
+                    result = client.upload(
+                        file_path=regular_files[0],
+                        target=target,
+                        tags=tags if tags else None,
+                        force=force,
+                    )
+                    results.append(result)
+                console.print(f"[green]✓[/green] Uploaded [bold]{result.path}[/bold]")
+            elif show_progress and (len(regular_files) > 1 or directories):
+                # Multiple files: use progress bar
+                with Progress(console=console) as progress:
+                    task = progress.add_task("Uploading files...", total=len(regular_files))
+                    for file_path in regular_files:
+                        progress.update(task, description=f"Uploading {file_path.name}...")
+                        result = client.upload(
+                            file_path=file_path,
+                            target=target,
+                            tags=tags if tags else None,
+                            force=force,
+                        )
+                        results.append(result)
+                        progress.advance(task)
+            else:
+                # Quiet or JSON mode: no progress
+                for file_path in regular_files:
                     result = client.upload(
                         file_path=file_path,
                         target=target,
@@ -273,17 +337,6 @@ def upload(
                         force=force,
                     )
                     results.append(result)
-                    progress.advance(task)
-        else:
-            # Quiet or JSON mode: no progress
-            for file_path in files:
-                result = client.upload(
-                    file_path=file_path,
-                    target=target,
-                    tags=tags if tags else None,
-                    force=force,
-                )
-                results.append(result)
 
         if output == "json":
             output_json(
@@ -305,103 +358,7 @@ def upload(
             for r in results:
                 console.print(r.path)
         elif len(results) > 1:
-            console.print(f"\n[green]✓[/green] Uploaded {len(results)} files")
-
-    except NotInitializedError:
-        error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")
-    except ContentExistsError as e:
-        error_exit(f"{e}\nUse --force to overwrite.")
-    except UnsupportedContentTypeError as e:
-        error_exit(str(e))
-    except SemStashError as e:
-        error_exit(str(e))
-
-
-@app.command(name="upload-dir")
-def upload_dir(
-    stash: StashArgument,
-    source_dir: Annotated[Path, typer.Argument(help="Source directory to upload")],
-    target_path: Annotated[
-        str,
-        typer.Argument(help="Target path (must end with '/')"),
-    ],
-    pattern: Annotated[str, typer.Option("--pattern", "-p", help="Glob pattern")] = "**/*",
-    tags: Annotated[list[str] | None, typer.Option("--tag", "-t", help="Tags")] = None,
-    region: RegionOption = DEFAULT_REGION,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite if exists")] = False,
-    output: OutputOption = "text",
-    quiet: QuietOption = False,
-) -> None:
-    """Upload a directory to semantic storage.
-
-    Recursively uploads all matching files from source directory
-    to the target path, preserving the directory structure.
-
-    Examples:
-        semstash mystash upload-dir ./docs/ /docs/
-        semstash mystash upload-dir ./images/ /photos/ --pattern "*.jpg"
-        semstash mystash upload-dir ./data/ /archive/ --tag backup
-    """
-    # Validate target path ends with /
-    if not target_path.endswith("/"):
-        error_exit("Target path must end with '/'")
-
-    # Validate source directory exists
-    if not source_dir.exists():
-        error_exit(f"Directory not found: {source_dir}")
-    if not source_dir.is_dir():
-        error_exit(f"Not a directory: {source_dir}")
-
-    try:
-        client = SemStash(bucket=stash, region=region)
-        show_progress = output == "text" and not quiet
-
-        if show_progress:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                progress.add_task(f"Uploading {source_dir}...", total=None)
-                results = client.upload_directory(
-                    source_dir=source_dir,
-                    target_path=target_path,
-                    pattern=pattern,
-                    tags=tags,
-                    force=force,
-                )
-        else:
-            results = client.upload_directory(
-                source_dir=source_dir,
-                target_path=target_path,
-                pattern=pattern,
-                tags=tags,
-                force=force,
-            )
-
-        if output == "json":
-            output_json(
-                {
-                    "source_dir": str(source_dir),
-                    "target_path": target_path,
-                    "uploaded": [
-                        {
-                            "path": r.path,
-                            "key": r.key,
-                            "content_type": r.content_type,
-                            "file_size": r.file_size,
-                        }
-                        for r in results
-                    ],
-                    "count": len(results),
-                }
-            )
-        elif quiet:
-            for r in results:
-                console.print(r.path)
-        else:
-            console.print(f"[green]✓[/green] Uploaded {len(results)} files to {target_path}")
+            console.print(f"[green]✓[/green] Uploaded {len(results)} files")
 
     except NotInitializedError:
         error_exit(f"Stash '{stash}' not found. Run 'semstash init {stash}' first.")

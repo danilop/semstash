@@ -113,6 +113,19 @@ You can upload multiple files at once and add tags for organization:
 semstash my-stash upload *.jpg /photos/ --tag vacation --tag 2024
 ```
 
+Upload entire directories—the command automatically detects directories and uploads their contents:
+
+```bash
+# Upload all files from a directory
+semstash my-stash upload ./documents/ /docs/
+
+# Upload with a pattern filter (only .txt files)
+semstash my-stash upload ./documents/ /docs/ --pattern "*.txt"
+
+# Upload nested directories (default pattern is **/* which includes subdirectories)
+semstash my-stash upload ./project/ /backup/
+```
+
 ### Searching with Natural Language
 
 Find content by describing what you're looking for:
@@ -323,7 +336,8 @@ semstash knowledge query "neural networks" --path /research/
 Manage photos, videos, and audio without manual tagging. Upload your media and search by what's in it:
 
 ```bash
-semstash media upload vacation-photos/*.jpg /photos/vacation/
+semstash media upload ./vacation-photos/ /photos/vacation/
+semstash media upload ./videos/ /videos/ --pattern "*.mp4"
 semstash media query "beach with palm trees"
 semstash media query "people dancing" --path /photos/
 ```
@@ -333,7 +347,7 @@ semstash media query "people dancing" --path /photos/
 Keep business documents searchable without complex filing systems. Upload contracts, reports, and correspondence, then find them by content:
 
 ```bash
-semstash archive upload contracts/*.pdf /legal/contracts/ --tag 2024
+semstash archive upload ./contracts/ /legal/contracts/ --tag 2024 --pattern "*.pdf"
 semstash archive query "non-compete clause" --path /legal/
 semstash archive query "payment terms 90 days"
 ```

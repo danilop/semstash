@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <!-- Gradient for the main icon -->
+    <linearGradient id="iconGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#1d4ed8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Main icon group - Storage box with semantic nodes -->
+  <g transform="translate(5, 5)">
+    <!-- Storage box base - right face (darker) -->
+    <path d="M45 60 L80 40 L80 75 L45 95 Z"
+          fill="#1d4ed8"/>
+
+    <!-- Storage box base - left face -->
+    <path d="M10 40 L45 60 L45 95 L10 75 Z"
+          fill="url(#iconGradient)"/>
+
+    <!-- Box top face - brighter for better contrast -->
+    <path d="M10 40 L45 20 L80 40 L45 60 Z"
+          fill="#93c5fd"/>
+
+    <!-- Top face inner highlight -->
+    <path d="M20 40 L45 28 L70 40 L45 52 Z"
+          fill="#bfdbfe"
+          opacity="0.5"/>
+
+    <!-- Box edges for definition -->
+    <path d="M10 40 L45 20 L80 40 L45 60 Z M45 60 L45 95 M10 40 L10 75 L45 95 M80 40 L80 75 L45 95"
+          fill="none"
+          stroke="#1e40af"
+          stroke-width="2"
+          stroke-linejoin="round"/>
+
+    <!-- Semantic connection nodes -->
+    <g fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5">
+      <!-- Central bright node -->
+      <circle cx="45" cy="48" r="8"/>
+
+      <!-- Orbiting nodes -->
+      <circle cx="24" cy="38" r="5"/>
+      <circle cx="66" cy="38" r="5"/>
+      <circle cx="30" cy="65" r="4.5"/>
+      <circle cx="60" cy="65" r="4.5"/>
+    </g>
+
+    <!-- Connection lines between nodes -->
+    <g stroke="#fcd34d" stroke-width="2.5" opacity="0.8">
+      <line x1="45" y1="48" x2="24" y2="38"/>
+      <line x1="45" y1="48" x2="66" y2="38"/>
+      <line x1="45" y1="48" x2="30" y2="65"/>
+      <line x1="45" y1="48" x2="60" y2="65"/>
+    </g>
+  </g>
+</svg>

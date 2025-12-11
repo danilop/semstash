@@ -21,7 +21,8 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -57,6 +58,9 @@ from semstash.utils import (
 # Template directory (relative to this file)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Static files directory
+STATIC_DIR = Path(__file__).parent / "static"
+
 # Set up Jinja2 templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -80,6 +84,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Serve favicon
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon() -> FileResponse:
+    """Serve the favicon."""
+    return FileResponse(
+        STATIC_DIR / "favicon.svg",
+        media_type="image/svg+xml",
+    )
+
 
 # Global stash instance (can be set by /init or /open endpoints)
 _stash: SemStash | None = None
